@@ -73099,7 +73099,7 @@ function() {
 			this.storage.getItem("settings").then(function(a) {
 				return function(b) {
 					return b ? a.settings = JSON.parse(b) : (a.settings = m,
-					a.bowser.tablet || a.bowser.mobile ? a.settings.controls = "single" : a.settings.controls = "keyboard"),
+					a.bowser.tablet || a.bowser.mobile ? a.settings.controls = "keyboard" : a.settings.controls = "keyboard"),
 					new Promise(function(a) {
 						return a()
 					}
