@@ -21,11 +21,18 @@
 
     function fireKey(code, type) {
         var ev = new KeyboardEvent(type, {
-            keyCode: code,
-            which: code,
+            key: code,
+            code: '',
             bubbles: true,
             cancelable: true
         });
+        try {
+            Object.defineProperty(ev, 'keyCode', { value: code, writable: false });
+            Object.defineProperty(ev, 'which', { value: code, writable: false });
+        } catch (e) {
+            ev.keyCode = code;
+            ev.which = code;
+        }
         window.dispatchEvent(ev);
     }
 
