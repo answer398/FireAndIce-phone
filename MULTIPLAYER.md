@@ -49,6 +49,7 @@ scripts/{dev,start}.{sh,cmd}      开发/生产启动脚本
 ## 关键引擎事实（逆向确认，勿凭猜测改动）
 
 - 每部游戏是一个约 2.2–2.4 MB 的 Closure 编译包：Phaser 2.6.2 + PIXI + Box2D + jQuery + RequireJS（AMD）内联。游戏 6 额外从 CDN 加载 Phaser/插件（`version.js`）。
+- **平台 API 依赖**：游戏核心原生于 4399 平台，游戏 1–4 的加载进度回调调用全局 `h5api.progress(...)`，而仓库内无人定义它。缺失时每个资源完成都会抛 ReferenceError——Chromium 的加载时序恰好能兜住，Firefox 上异常经图片 onload 路径逃逸、打断加载队列，游戏永远停在黑屏。`games/lib/platform-shim.js` 在游戏 bundle 之前提供无操作存根（所有六个页面已接入）；若未来接入真实平台，它会让位于已有定义。
 - 输入默认 `settings.controls === "keyboard"`（`loadSettings` 两个分支都设 keyboard）。
   - Watergirl (`wg`)：`W/A/D`；Fireboy (`fb`)：`↑/←/→` —— `States/Level/CharCursors` 内 `input.keyboard.addKey`。
   - 暂停：`P` 键（Level 状态 `pauseKey.onDown → togglePause`，切换 `game.paused`）。
