@@ -4,3 +4,13 @@ har/
 # Python cache
 __pycache__/
 *.pyc
+
+# ---- multiplayer layer (server/) ----
+node_modules/
+server/.env
+server/*.log
+npm-debug.log*
+
+# OS noise
+.DS_Store
+Thumbs.db

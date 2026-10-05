@@ -1,0 +1,24 @@
+{
+  "name": "fireice-online-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static hosting + room/signaling server for the Fireboy & Watergirl online multiplayer layer",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.5"
+  }
+}
