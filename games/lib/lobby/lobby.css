@@ -1,0 +1,109 @@
+/* Lobby multiplayer section (index.html) — phone-first, scoped under .lbp-*. */
+
+#lobby-mp {
+  width: 100%;
+  max-width: 560px;
+  margin: 40px auto 0;
+}
+
+.lbp-box {
+  background: rgba(20, 22, 30, 0.92);
+  border: 2px solid #2a2a35;
+  border-radius: 18px;
+  padding: 20px 18px;
+  box-sizing: border-box;
+}
+
+.lbp-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;
+}
+.lbp-head h2 {
+  margin: 0; font-size: 1.25rem;
+  background: linear-gradient(45deg, #ff4d4d, #33ccff);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.lbp-refresh { background: none; border: none; cursor: pointer; padding: 6px; }
+
+.lbp-dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #35d07f;
+}
+.lbp-dot.lbp-warn { background: #ffb020; }
+.lbp-dot.lbp-bad { background: #ff4d4d; }
+.lbp-dot-on { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #35d07f; margin-right: 4px; }
+.lbp-dot-off { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ffb020; margin-right: 4px; animation: lbp-blink 1s infinite; }
+@keyframes lbp-blink { 50% { opacity: 0.3; } }
+
+.lbp-hint { font-size: 0.85rem; color: #9aa0ab; line-height: 1.6; margin: 6px 0 12px; }
+
+.lbp-label { font-size: 0.8rem; color: #9aa0ab; margin: 12px 0 6px; letter-spacing: 0.5px; }
+
+.lbp-games, .lbp-choices {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+.lbp-game {
+  padding: 12px 6px; border-radius: 12px; border: 1px solid #2a2a35;
+  background: rgba(255,255,255,0.04); color: #fff; font-size: 0.92rem; cursor: pointer;
+  min-height: 44px;
+}
+.lbp-game.lbp-on { border-color: #33ccff; background: rgba(51,204,255,0.18); }
+.lbp-game:active { transform: translateY(1px); }
+
+.lbp-btn {
+  padding: 12px 14px; border-radius: 12px; border: 1px solid #2a2a35;
+  background: rgba(255,255,255,0.06); color: #fff; font-size: 0.95rem; cursor: pointer;
+  min-height: 46px; box-sizing: border-box;
+}
+.lbp-btn.lbp-primary { background: rgba(255,77,77,0.25); border-color: rgba(255,77,77,0.55); font-weight: 600; }
+.lbp-btn.lbp-danger { background: rgba(255,77,77,0.12); }
+.lbp-btn.lbp-ghost { background: transparent; color: #9aa0ab; }
+.lbp-btn.lbp-small { min-height: 44px; padding: 8px 12px; flex: 0 0 auto; }
+.lbp-btn.lbp-on { border-color: #35d07f; background: rgba(53,208,127,0.18); }
+.lbp-btn:disabled { opacity: 0.45; pointer-events: none; }
+.lbp-btn:active { transform: translateY(1px); }
+
+.lbp-btnrow { display: flex; gap: 8px; margin-top: 10px; }
+.lbp-btnrow .lbp-btn { flex: 1; }
+
+.lbp-divider { height: 1px; background: #2a2a35; margin: 16px 0; }
+
+.lbp-joinrow { display: flex; gap: 8px; }
+.lbp-input {
+  flex: 1; padding: 12px 10px; border-radius: 12px; border: 1px solid #2a2a35;
+  background: rgba(255,255,255,0.07); color: #fff; font-size: 1.05rem;
+  letter-spacing: 4px; text-transform: uppercase; text-align: center; min-width: 0; box-sizing: border-box;
+}
+.lbp-joinrow .lbp-btn { flex: 0 0 auto; }
+
+.lbp-codewrap { text-align: center; margin-bottom: 10px; }
+.lbp-code {
+  font-size: 2.4rem; font-weight: 700; letter-spacing: 12px; text-indent: 12px;
+  color: #33ccff; user-select: all;
+}
+.lbp-state { font-size: 0.9rem; color: #c6cbd4; }
+
+.lbp-invite { display: flex; gap: 6px; margin: 8px 0 12px; }
+.lbp-url { font-size: 0.8rem; letter-spacing: 0; text-align: left; color: #9aa0ab; }
+
+.lbp-slots { display: flex; gap: 8px; margin: 10px 0; }
+.lbp-slot {
+  flex: 1; border: 1px solid #2a2a35; border-radius: 12px; padding: 10px 12px;
+  font-size: 0.85rem; line-height: 1.7; background: rgba(255,255,255,0.03);
+}
+.lbp-slot.lbp-me { border-color: rgba(51,204,255,0.55); }
+.lbp-slot.lbp-off { opacity: 0.75; }
+.lbp-slot-head { display: flex; justify-content: space-between; align-items: baseline; font-weight: 600; }
+.lbp-you { font-size: 0.7rem; color: #9aa0ab; font-weight: 400; }
+.lbp-dim { color: #6b7280; }
+
+.lbp-error {
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 0.85rem;
+  background: rgba(255,77,77,0.15); border: 1px solid rgba(255,77,77,0.4); color: #ffb3b3;
+}
+.lbp-flash { animation: lbp-flash-in 0.25s ease; }
+@keyframes lbp-flash-in { from { transform: translateY(-4px); opacity: 0; } }
+
+@media (max-width: 420px) {
+  .lbp-games { grid-template-columns: repeat(2, 1fr); }
+  .lbp-code { font-size: 2rem; letter-spacing: 9px; text-indent: 9px; }
+}

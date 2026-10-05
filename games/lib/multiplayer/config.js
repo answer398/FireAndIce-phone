@@ -26,9 +26,12 @@ export const config = {
 
 export const urlFlags = (() => {
   const params = new URLSearchParams(location.search);
+  const gameMatch = location.pathname.match(/^\/?games\/(\d-[a-z0-9-]+)\/?/);
   return {
     room: params.get('room'),
     debug: params.get('mpDebug') === '1',
+    /** Game directory id when this page IS a game page (null in the lobby). */
+    game: gameMatch ? gameMatch[1] : null,
     /** `?mp=off` hard-disables the layer (troubleshooting escape hatch). */
     off: params.get('mp') === 'off',
   };

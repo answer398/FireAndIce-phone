@@ -11,7 +11,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "smoke": "node test/smoke.mjs"
+    "smoke": "node test/rooms.test.mjs",
+    "test": "node test/rooms.test.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

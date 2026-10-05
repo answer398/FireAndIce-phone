@@ -26,23 +26,27 @@ common/protocol/events.mjs        协议常量（事件名/角色/错误码/校�
 server/                           Node 服务端（独立 npm 包）
   src/index.js                    入口：HTTP + Socket.IO + 房间管理
   src/app.js                      静态托管 + 白名单封禁（.git/tools/server/HAR 不可达）
-  src/rooms/{room,roomManager}.js 房间实体 / 坐席 / token 重连 / 宽限期
-  src/realtime/socketServer.js    Socket.IO 装配：入座、定向转发、RTC 信令
-  test/smoke.mjs                  协议级冒烟测试（npm run smoke）
+  src/rooms/{room,roomManager}.js 房间状态机 / 坐席 / token 重连 / 频控 / 清理
+  src/rooms/rateLimiter.js        创建/加入请求频控（固定窗口，按 IP）
+  src/realtime/socketServer.js    Socket.IO 装配：严格校验、角色授权、定向转发、RTC 信令
+  test/rooms.test.mjs             35 项协议测试（npm test，覆盖建房→开局→断线→清理全链路）
+games/lib/lobby/                  大厅联机模块（index.html 加载，原生 ES Module）
+  lobby.js                        建房/加入/邀请链接/分享/双方状态/准备/交换/进入游戏
+  lobby.css                       手机优先样式（.lbp-* 命名空间）
 games/lib/multiplayer/            浏览器扩展层（原生 ES Module，无构建步骤）
   boot.js                         入口（动态加载协议+main；静态托管下优雅禁用）
-  main.js                         编排：模式选择、host/guest 装配
-  config.js                       客户端配置（ICE、帧率、心跳）
+  main.js                         编排：模式选择、host/guest 装配、room:state 门控
+  config.js                       客户端配置（ICE、帧率、心跳；?room=/游戏 id 解析）
   core/{bus,logger}.js            事件总线 / 日志
   net/socketClient.js             Socket.IO 封装（重连、延迟探测、AMD 冲突规避）
   net/videoChannel.js             WebRTC 视频 + 游戏音频捕获
-  room/roomSession.js             创建/加入/重连/离开状态机（token 持久化）
+  room/roomSession.js             创建/加入/重连/离开 + room:state/countdown/start 镜像（token 持久化）
   input/keys.js                   角色→键码映射（复用统一 InputManager 的唯一事实表）
   input/localPads.js              Guest 输入桥：FBInput 本地事件 → InputFrame（不再自行捕获输入）
   input/remoteApplier.js          Host：帧→FBInput.applyRemote 注入；保留 seq 去重与画布鼠标
   adapter/gameAdapter.js          运行时挂钩：捕获 Phaser 实例、阶段检测、暂停注入
-  sync/statusSync.js              关卡/暂停状态广播（host→guest）
-  ui/{overlay,styles}.js          联机 UI（房间面板、视频层、横幅、状态 chip）
+  sync/statusSync.js              关卡/暂停状态广播（host→guest；服务端据此驱动 paused/finished）
+  ui/{overlay,styles}.js          联机 UI（房间面板、双方席位卡、倒计时、视频层、横幅）
 games/lib/input/                  统一输入层（经典脚本，无依赖，所有页面共用）
   input-manager.js                InputManager：键盘/触屏/远程三源同入口注入引擎
   touch-pads.js                   多点触控按钮 UI + 移动端视口/手势加固
@@ -83,15 +87,76 @@ scripts/{dev,start}.{sh,cmd}      开发/生产启动脚本
 
 ## 房间与会话
 
-- 房主选角色（火娃/水娃）→ 创建 4 位房间码 → 面板展示 `?room=CODE` 分享链接；队友打开即入座**对立角色**。
-- 坐席以不透明 `token`（16 字节随机）标识，仅发给本人 socket：
-  - 网络闪断：socket 自动重连后带 token `room:rejoin`，座位/角色/视频自动恢复。
-  - 页面刷新：sessionStorage 里的 token 先走 rejoin；失败自动回退到 `?room=` 加入。
-  - 队友断开：房主端横幅提示，座位保留；队友丢失 token 时可重新加入，服务端允许接管**已断开的 guest 座位**。
-  - 房主断开：房间保活 `ROOM_GRACE_MS`（默认 60s，`server/.env` 可调），超时广播 `room:closed` 并销毁。
-- 输入是**状态帧** `{up,left,right,seq}`（变更即发 + 1s 心跳），重连后下一帧即完成再同步；`seq` 单调，乱序旧帧被丢弃。帧的源头是 `games/lib/input/` 统一输入层的本地事件（`onLocalEvent`），见上文"统一输入层"。
+### 大厅流程（手机优先）
 
-## 启动
+1. **创建**：在大厅（`/`）选游戏 → 选角色（默认火娃）→ 创建房间。服务器生成 4 位无易混字符房间码（无 I/L/1/O/0）与邀请链接 `/?room=CODE`。
+2. **加入**：队友打开邀请链接即自动入座**对立角色**（无需手输）；大厅同时保留房间码手输入口。
+3. **准备**：大厅展示双方席位卡（角色/在线/准备/延迟），双方点「准备」；进入游戏页后资源加载完成自动上报 `room:load`。
+4. **开局**：双方**就绪 + 已加载**后，服务器统一发出带服务器时间戳的倒计时（`room:countdown`）与开始指令（`room:start`）——两端禁止自行开始。大厅页若收到开始指令会自动跳入游戏。
+5. **游玩**：host 运行游戏画面（WebRTC 视频推流），guest 远程操控对立角色；换角色需双方同意（`room:swap`），本关结束（finished）后重新准备即自动开下一局。
+
+### 房间状态机（服务器是唯一写者，客户端只渲染）
+
+```
+waiting ── 双方入座+已加载+已准备 ──▶ ready ──▶ countdown(默认3s) ──▶ playing
+   ▲                                                                  │
+   │── guest 席位释放（主动退出/宽限超时）◀────── reconnecting ◁───────┤
+   │                                      playing ⇄ paused           │
+   └──────── 双方重新准备开下一局 ◀──────────── finished ◀── phase=end ─┘
+```
+
+- **countdown 随时可中止**：任一方取消准备/断线/发出换角色请求 → 回到 waiting，绝不带伤开局。
+- **服务器时间戳**：`room:countdown`/`room:start` 均携带 `serverNow` 与 `startAt`，客户端用 `serverNow - 本地时钟` 求偏移渲染倒计时，杜绝两端时差。
+- **`playing/paused/reconnecting/finished` 才放行输入中继**（`PLAY_RELAY_STATES`），开局前 guest 的输入帧在服务器侧直接丢弃。
+- **paused/finished 由事实驱动**：host 的 `game:status`（paused / phase=end）由服务器消费并推进状态机；关卡结束自动清空双方 ready，必须重新准备。
+
+### 身份与重连
+
+- 坐席以不透明 `token`（16 字节 crypto 随机）标识，仅发给本人 socket；`room:state` 广播永不携带 token。**角色/席位只能来自服务器分配**，任何 payload 里的 `role/char` 都被忽略。
+- token 存 **sessionStorage**（每标签页独立身份，按房间码为键，`/`→`/games/...` 导航不丢）：网络闪断 socket 自动重连后 `room:rejoin` 恢复席位；页面刷新/从大厅进入游戏页同理，loaded/ready 事实一并保留。
+- **断线席位保留 45s**（`SEAT_GRACE_MS`，30–60s 可调）：对方看到「正在重连」横幅；超时才真正释放席位（guest 位可被新玩家加入，host 位释放即关房）。
+- **重复标签页**：同 token 的新连接胜出接管席位，旧连接收到 `duplicate-tab` 错误并被移出广播；旧连接随后的断线不会误伤新连接的席位。
+
+### 服务端防护
+
+- **频控**：按 IP 固定窗口（默认创建 6/min、加入/重连 20/min、延迟上报 20/min），超限回 `rate-limited`。
+- **容量**：房间总数上限（默认 200），超限回 `server-busy`。
+- **校验**：所有事件 payload 严格校验（房间码格式、布尔标志、交换动作、延迟范围、帧形状、信令大小）；房间游戏 id 与服务器扫描到的目录白名单匹配。
+- **清理**：席位宽限定时器、空房 TTL（默认 10min）、关闭即回收全部定时器与 token 索引；sweeper 兜底扫描，测试套件结束时 rooms/tokens 归零。
+
+### 错误码与 UI
+
+`room-not-found`（房间码错误）/ `room-full`（含宽限期占位）/ `room-closed`（房间已结束）/ `bad-token`（会话过期）/ `duplicate-tab`（重复标签页）/ `char-taken` / `already-in-room` / `invalid-state` / `bad-payload` / `protocol-version-mismatch` / `rate-limited` / `server-busy` / `game-not-found` —— 大厅与游戏页 overlay 均映射为中文提示展示。
+
+### 协议事件表
+
+| 事件 | 方向 | 载荷 | 说明 |
+| --- | --- | --- | --- |
+| `room:create` | C→S (ack) | `{game, char?, protocol?}` | 建房；创建者默认火娃，char 必须在枚举内 |
+| `room:created` | S→C | `{code, game, role, char, token, protocol, state}` | 入座成功；**token 仅发给本人** |
+| `room:join` | C→S (ack) | `{code, protocol?}` | 加入；角色由服务器派发（host 的对立角色） |
+| `room:joined` | S→C | 同 created | 入座成功 |
+| `room:rejoin` | C→S (ack) | `{token, protocol?}` | 断线/刷新/换页后按 token 恢复原席位 |
+| `room:rejoined` | S→C | 同 created | 恢复成功 |
+| `room:leave` | C→S | `{}` | 主动退出：guest 释放席位，host 关房 |
+| `room:load` | C→S | `{loaded}` | 本页游戏资源加载完成（自动上报） |
+| `room:ready` | C→S | `{ready}` | 玩家手动准备/取消 |
+| `room:swap` | C→S | `{action: request\|accept\|decline\|cancel}` | 协商换角色；结果经 room:state 广播 |
+| `room:state` | S→双方 | `{code, game, state, hostChar, serverNow, players:{host,guest}, swap, countdown}` | **每次变更全量广播**，唯一权威投影 |
+| `room:countdown` | S→双方 | `{serverNow, startAt, durationMs}` | 双方就绪后统一倒计时 |
+| `room:start` | S→双方 | `{serverNow, startAt}` | 到点开局；唯一的开始路径 |
+| `room:peer:joined` / `room:peer:left` | S→对方 | `{role, char}` / `{role, graceMs, state}` | 对端上下线的即时信号（状态以 room:state 为准） |
+| `room:error` | S→C | `{code, message}` | 见错误码表 |
+| `room:closed` | S→双方 | `{code, reason}` | host-left / host-timeout / expired / destroyed |
+| `net:ping` | C→S (ack) | echo | RTT 探测 |
+| `net:latency` | C→S | `{ms}` | 自报延迟（仅展示用，进 room:state） |
+| `input:frame` | guest→host | `{up,left,right,seq}` | 状态帧；仅 PLAY_RELAY_STATES 放行 |
+| `input:pointer` | guest→host | `{phase,nx,ny}` | 远程菜单点击；同上 |
+| `game:command` | guest→host | `{type}` | 如 pause-toggle；同上 |
+| `game:status` | host→guest | `{phase, paused?}` | 阶段广播；服务器消费 paused/finished 事实 |
+| `rtc:signal` | 双向中继 | `{kind, …}` | WebRTC offer/answer/ICE |
+
+### 启动与测试
 
 ```bash
 # 开发（文件变更自动重启）
@@ -103,10 +168,12 @@ scripts/start.cmd / scripts/start.sh
 
 # 或直接
 cd server && npm install && npm start     # http://0.0.0.0:8080
-cd server && npm run smoke                # 19 项协议冒烟测试
+cd server && npm test                     # 35 项房间协议测试（别名 npm run smoke）
 ```
 
 配置：复制 `server/.env.example` → `server/.env`。所有新增代码必须复用 `common/protocol/events.mjs` 的事件名，禁止硬编码。
+
+测试矩阵（`server/test/rooms.test.mjs`，真实 server 栈 + socket.io-client）：静态封禁、建房/加入/满房/宽限占位、角色与 payload 越权（伪造 role/char/status/帧）、就绪→倒计时→开始（含单侧不开始、取消中止、时间戳断言）、换角色（请求/同意/拒绝/过期/阻塞开局）、关卡结束→重准备、断线→reconnecting→token 重连→事实保留、重复标签页接管、坏 token、席位宽限释放/补位、host 宽限关房、主动退场、paused 中继、空房 TTL、频控、容量上限；结束时 rooms/tokens 归零（无泄漏）。
 
 ## 公网部署（HTTPS/WSS）
 
