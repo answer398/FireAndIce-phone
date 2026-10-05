@@ -1,81 +1,87 @@
 /**
  * Host-side remote input application.
  *
- * Turns network input frames into the exact synthetic events the game
- * engine already understands:
- *  - key frames  -> KeyboardEvent(keydown/keyup) on `window` (the engine's
- *    Phaser Keyboard manager listens there and matches by `event.keyCode`;
- *    this is the same proven mechanism games/lib/touch-controls.js uses)
- *  - pointer     -> MouseEvent(mousedown/move/up) on the game canvas
- *    (Phaser Mouse handlers are attached to the canvas in capture phase and
- *    read clientX/clientY, so synthetic events at canvas coordinates behave
- *    like a real mouse)
+ * All remote KEY input is applied through the unified InputManager
+ * (`FBInput.applyRemote`): it is source-tagged 'remote', injected into the
+ * engine as synthetic KeyboardEvents on the verified targets, and NEVER
+ * re-emitted as local events — so remote frames can never loop back onto
+ * the network. This module keeps only the protocol-side concerns:
  *
- * A dedupe table keeps key state idempotent even if the network delivers
- * duplicate frames after a reconnect.
+ *  - seq ordering/dedupe: frames are state snapshots, so an out-of-order
+ *    OLD frame would fight the newer state; only forward progress applies.
+ *  - the canvas pointer (mouse) events the menu/pause UI needs — those are
+ *    not role-based input, so they stay here: Phaser Mouse listens on the
+ *    canvas in capture phase reading clientX/Y (verified per game bundle).
+ *
+ * Idempotency: the manager dedupes no-op transitions, so duplicate frames
+ * after a reconnect cannot double-fire keys into the engine.
  */
 import { logger } from '../core/logger.js';
+
+const FBInput = window.FBInput;
 
 export class RemoteApplier {
   constructor({ P }) {
     this.P = P;
-    /** keyCode -> true while we hold it down on behalf of the remote peer. */
-    this.heldKeys = new Map();
+    // The manager is the single input funnel; FBInput only exposes tables.
+    this.manager = FBInput ? FBInput.manager() : null;
     this.lastSeq = -1;
     this.canvas = null;
+    /** Character seat the remote peer controls (frames arrive for it). */
+    this.role = null;
   }
 
   attachCanvas(canvas) {
     this.canvas = canvas;
   }
 
-  /** Apply a state frame from the guest. `charKeys` maps action->keyCode. */
-  applyFrame(frame, charKeys) {
+  /**
+   * Apply a state frame from the guest. `role` is the peer's character
+   * ('fb' | 'wg'); the manager maps actions to that role's real key codes.
+   */
+  applyFrame(frame, role) {
+    if (!this.manager) throw new Error('games/lib/input/input-manager.js must load first');
     if (typeof frame?.seq === 'number') {
-      // Frames are state snapshots, not deltas: an out-of-order OLD frame
-      // would fight the newer state. Only accept forward progress.
       if (frame.seq <= this.lastSeq) return;
       this.lastSeq = frame.seq;
     }
-    for (const [action, keyCode] of Object.entries(charKeys)) {
-      this.#setKey(keyCode, Boolean(frame[action]));
+    this.role = role;
+    for (const action of Object.values(this.P.INPUT_ACTIONS)) {
+      this.manager.applyRemote(role, action, Boolean(frame[action]), { seq: frame.seq });
     }
+    logger.debug('remote frame applied', role, frame);
   }
 
   /** Reset key state (guest left / level ended / room closed). */
   releaseAll() {
-    for (const keyCode of [...this.heldKeys.keys()]) {
-      this.#setKey(keyCode, false);
-    }
+    if (this.manager) this.manager.releaseAll({ source: 'remote' });
     this.lastSeq = -1;
   }
 
   /** Tap the pause key (same key the engine binds in the Level state). */
   tapPause() {
-    const code = 80; // KEY_CODES.P
-    this.#dispatchKey(code, 'keydown');
-    setTimeout(() => this.#dispatchKey(code, 'keyup'), 80);
+    const code = FBInput ? FBInput.KEY_CODES.P : 80;
+    this.#tapKey(code);
   }
 
-  #setKey(keyCode, down) {
-    const isDown = this.heldKeys.get(keyCode) ?? false;
-    if (down === isDown) return;
-    this.heldKeys.set(keyCode, down);
-    this.#dispatchKey(keyCode, down ? 'keydown' : 'keyup');
-    logger.debug('remote key', keyCode, down ? 'down' : 'up');
-  }
-
-  #dispatchKey(keyCode, type) {
-    const event = new KeyboardEvent(type, {
-      bubbles: true,
-      cancelable: true,
-    });
-    // The engine reads `event.keyCode` / `event.which`, which the
-    // KeyboardEvent constructor does not set — define them explicitly
-    // (same approach as games/lib/touch-controls.js).
-    Object.defineProperty(event, 'keyCode', { value: keyCode });
-    Object.defineProperty(event, 'which', { value: keyCode });
+  #tapKey(code) {
+    if (this.manager) {
+      this.manager.injectKey(code, true);
+      setTimeout(() => this.manager.injectKey(code, false), 80);
+      return;
+    }
+    // Fallback if the unified manager is unavailable (should not happen —
+    // the game pages load input-manager.js first).
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'keyCode', { value: code });
+    Object.defineProperty(event, 'which', { value: code });
     window.dispatchEvent(event);
+    setTimeout(() => {
+      const up = new KeyboardEvent('keyup', { bubbles: true, cancelable: true });
+      Object.defineProperty(up, 'keyCode', { value: code });
+      Object.defineProperty(up, 'which', { value: code });
+      window.dispatchEvent(up);
+    }, 80);
   }
 
   /**

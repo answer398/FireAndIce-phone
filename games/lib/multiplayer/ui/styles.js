@@ -70,27 +70,7 @@ export const STYLES = `
 }
 body.mp-guest-active #mp-video { display: block; }
 
-.mp-pad {
-  position: fixed; bottom: 16px; z-index: 2147480002;
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-}
-.mp-pad-left { left: 12px; }
-.mp-pad-right { right: 12px; }
-.mp-pad-title { font-size: 11px; opacity: 0.65; letter-spacing: 1px; }
-.mp-pad-row { display: flex; gap: 10px; }
-.mp-pad-btn {
-  width: 76px; height: 76px; border-radius: 18px;
-  background: rgba(51,204,255,0.10); border: 2px solid rgba(51,204,255,0.35);
-  color: rgba(51,204,255,0.85); font-size: 24px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center;
-  user-select: none; -webkit-user-select: none; touch-action: none;
-}
-.mp-pad-right .mp-pad-btn {
-  background: rgba(255,77,77,0.10); border-color: rgba(255,77,77,0.35);
-  color: rgba(255,77,77,0.85);
-}
-.mp-pad-btn.active { background: rgba(255,255,255,0.22); }
-.mp-pad-btn[data-action="up"] { border-radius: 50%; }
+/* Guest/host pads now come from games/lib/input/touch-pads.js (.tc-pad). */
 
 #mp-banner {
   position: fixed; top: 46px; left: 50%; transform: translateX(-50%);
@@ -100,11 +80,7 @@ body.mp-guest-active #mp-video { display: block; }
 }
 
 @media (max-height: 420px) {
-  .mp-pad-btn { width: 64px; height: 64px; border-radius: 14px; }
   #mp-chip { top: 4px; }
   #mp-panel { top: 38px; }
-}
-@media (min-width: 900px) and (hover: hover) {
-  .mp-pad { display: none !important; }
 }
 `;

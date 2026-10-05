@@ -206,6 +206,13 @@ export class GameAdapter {
   }
 
   #dispatchKey(keyCode, type) {
+    // Route through the unified InputManager so the pause key uses the same
+    // verified dispatch targets as every other injected key.
+    const fb = window.FBInput;
+    if (fb) {
+      fb.manager().injectKey(keyCode, type === 'keydown');
+      return;
+    }
     const event = new KeyboardEvent(type, { bubbles: true, cancelable: true });
     Object.defineProperty(event, 'keyCode', { value: keyCode });
     Object.defineProperty(event, 'which', { value: keyCode });

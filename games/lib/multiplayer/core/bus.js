@@ -32,7 +32,9 @@ export class Bus {
       try {
         fn(payload);
       } catch (err) {
-        console.error(`[mp] handler for "${type}" failed`, err);
+        // err?.message keeps TypeError/DOMException failures diagnosable
+        // (a bare error object logs as {}).
+        console.error(`[mp] handler for "${type}" failed:`, err?.message ?? err, err?.stack?.split('\n')[1] ?? '');
       }
     }
   }

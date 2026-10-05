@@ -1,33 +1,55 @@
 /**
- * Guest-side input capture.
+ * Guest-side input bridge.
  *
- * Two sources feed one state frame { up, left, right, seq }:
- *  - on-screen touch pads (landscape phone layout, one pad for the guest's
- *    character) built here — independent of games/lib/touch-controls.js,
- *    which stays in charge of the LOCAL game's pads on the host screen
- *  - a physical keyboard, so a guest on a laptop can play with the real
- *    keys of their character (W/A/D or arrows) without sending the other
- *    character's keys by accident
+ * Since the unified InputManager (games/lib/input/) exists, this module no
+ * longer captures any input itself. It does three things:
  *
- * The resulting frame goes over the network (host applies it); it is never
- * injected into the guest's own page.
+ *  1. Hands the guest's room-assigned character to the manager via
+ *     FBInput.setLocalRoles([char]) — from then on the manager's physical
+ *     keyboard and touch-pad sources only ever produce events for THAT
+ *     character, never for the host's (role assignment is enforced in one
+ *     place; a guest cannot operate the other character).
+ *
+ *  2. Translates the manager's local pressed/released events into protocol
+ *     state frames { up, left, right, seq } on the bus ('pads:frame').
+ *     Frames are change-driven plus a 1s heartbeat, so a reconnecting host
+ *     re-syncs from the very next frame.
+ *
+ *  3. Gates pads/frames on the host being inside a level (setEnabled), and
+ *     releases everything the moment it turns off, so the host never keeps
+ *     a stuck key.
+ *
+ * Loop safety: remote input is applied host-side by remoteApplier through
+ * FBInput.applyRemote, which is source-tagged 'remote' and never re-emitted
+ * as a local event — frames can therefore never echo back onto the network.
  */
-import { CHAR_KEYS } from './keys.js';
 import { logger } from '../core/logger.js';
+
+const FBInput = window.FBInput;
+const FBInputPads = window.FBInputPads;
 
 export class LocalPads {
   constructor({ bus, char }) {
+    if (!FBInput) {
+      throw new Error('games/lib/input/input-manager.js must load before the multiplayer layer');
+    }
     this.bus = bus;
     this.char = char;
-    this.charKeys = CHAR_KEYS[char];
+    // The manager is the single input funnel; FBInput only exposes tables.
+    this.manager = FBInput.manager();
 
     this.state = { up: false, left: false, right: false };
     this.seq = 0;
     this.heartbeat = null;
     this.enabled = false;
-    this.elements = [];
 
-    this.#installKeyCapture();
+    this.manager.setLocalRoles([char]);
+    this.unsubEvents = this.manager.onLocalEvent((ev) => {
+      if (ev.role !== this.char || !this.enabled) return;
+      this.state[ev.action] = ev.type === 'pressed';
+      this.#sendFrame();
+    });
+    logger.debug('local input bound to char', char);
   }
 
   /** Pads respond (and frames flow) only while the host is in a level. */
@@ -35,25 +57,29 @@ export class LocalPads {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
     if (!enabled) {
-      // Release everything so the host does not keep a stuck key.
+      // Release everything (pads, keyboard) for our character so the host
+      // does not keep a stuck key, then push one final all-released frame.
+      this.manager.releaseAll({ source: 'local', role: this.char });
       this.state = { up: false, left: false, right: false };
       this.#sendFrame(true);
       this.#stopHeartbeat();
     } else {
+      this.state = { up: false, left: false, right: false };
       this.#startHeartbeat();
     }
-    this.bus.emit('pads:enabled', enabled);
-    for (const el of this.elements) {
-      el.style.display = enabled ? '' : 'none';
+    // Pads: on touch devices they exist already; on desktop guests they are
+    // rendered on demand (mouse-operable), exactly like the old buildPad().
+    if (FBInputPads) {
+      FBInputPads.forceVisible(enabled);
+      FBInputPads.setVisible(enabled);
     }
+    this.bus.emit('pads:enabled', enabled);
   }
 
   destroy() {
     this.setEnabled(false);
-    for (const el of this.elements) el.remove();
-    this.elements = [];
-    window.removeEventListener('keydown', this.#onKeyDown, true);
-    window.removeEventListener('keyup', this.#onKeyUp, true);
+    if (this.unsubEvents) this.unsubEvents();
+    this.unsubEvents = null;
   }
 
   // ---- frame production ---------------------------------------------------
@@ -74,103 +100,5 @@ export class LocalPads {
       clearInterval(this.heartbeat);
       this.heartbeat = null;
     }
-  }
-
-  #applyAction(action, down) {
-    if (this.state[action] === down) return;
-    this.state[action] = down;
-    this.#sendFrame();
-  }
-
-  // ---- physical keyboard ----------------------------------------------------
-
-  #onKeyDown = (event) => {
-    if (!this.enabled || event.repeat) return;
-    const action = this.#actionForKey(event.keyCode ?? event.which);
-    if (action) {
-      event.preventDefault();
-      this.#applyAction(action, true);
-    }
-  };
-
-  #onKeyUp = (event) => {
-    const action = this.#actionForKey(event.keyCode ?? event.which);
-    if (action) {
-      if (this.enabled) event.preventDefault();
-      this.#applyAction(action, false);
-    }
-  };
-
-  #installKeyCapture() {
-    window.addEventListener('keydown', this.#onKeyDown, true);
-    window.addEventListener('keyup', this.#onKeyUp, true);
-  }
-
-  #actionForKey(code) {
-    for (const [action, keyCode] of Object.entries(this.charKeys)) {
-      if (keyCode === code) return action;
-    }
-    return null;
-  }
-
-  // ---- on-screen pads -------------------------------------------------------
-
-  /**
-   * Build one touch pad for this character, pinned to the screen edge the
-   * engine itself uses for that character (watergirl left, fireboy right).
-   */
-  buildPad(mount) {
-    const actions = [
-      { action: 'up', label: '跳' },
-      { action: 'left', label: '←' },
-      { action: 'right', label: '→' },
-    ];
-    const side = this.char === 'wg' ? 'left' : 'right';
-
-    const pad = document.createElement('div');
-    pad.className = `mp-pad mp-pad-${side}`;
-    pad.innerHTML = [
-      `<div class="mp-pad-title">${this.char === 'wg' ? '水娃' : '火娃'}</div>`,
-      `<div class="mp-pad-row">`,
-      ...actions.map(
-        (a) =>
-          `<div class="mp-pad-btn" data-action="${a.action}"><span>${a.label}</span></div>`,
-      ),
-      `</div>`,
-    ].join('');
-
-    for (const btn of pad.querySelectorAll('.mp-pad-btn')) {
-      const action = btn.getAttribute('data-action');
-      const down = (event) => {
-        event.preventDefault();
-        btn.classList.add('active');
-        this.#applyAction(action, true);
-      };
-      const up = (event) => {
-        event.preventDefault();
-        btn.classList.remove('active');
-        this.#applyAction(action, false);
-      };
-      btn.addEventListener('touchstart', down, { passive: false });
-      btn.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
-      btn.addEventListener('touchend', up);
-      btn.addEventListener('touchcancel', up);
-      // Mouse fallback for desktop guests testing the pads.
-      btn.addEventListener('mousedown', down);
-      btn.addEventListener('mouseup', up);
-      btn.addEventListener('mouseleave', () => {
-        if (btn.classList.contains('active')) {
-          btn.classList.remove('active');
-          this.#applyAction(action, false);
-        }
-      });
-      btn.addEventListener('contextmenu', (e) => e.preventDefault());
-    }
-
-    mount.appendChild(pad);
-    this.elements.push(pad);
-    pad.style.display = this.enabled ? '' : 'none';
-    logger.debug('pad built for', this.char);
-    return pad;
   }
 }

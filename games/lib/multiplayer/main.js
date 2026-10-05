@@ -20,13 +20,20 @@ import { LocalPads } from './input/localPads.js';
 import { VideoChannel, hookGameAudioOnce } from './net/videoChannel.js';
 import { StatusSync, GuestStatusTracker } from './sync/statusSync.js';
 import { Overlay } from './ui/overlay.js';
-import { CHAR_KEYS } from './input/keys.js';
 
 export function bootstrap(P) {
   if (urlFlags.off) {
     logger.info('disabled via ?mp=off');
     return;
   }
+  if (!window.FBInput) {
+    // The unified input layer (games/lib/input/) is a hard dependency:
+    // without it, seats/roles/loop-prevention cannot be enforced.
+    logger.warn('multiplayer layer unavailable: FBInput missing');
+    return;
+  }
+
+  const input = window.FBInput.manager();
 
   const bus = new Bus();
   let statusSync = null;
@@ -69,8 +76,10 @@ export function bootstrap(P) {
     hostStreamStarted = false;
     remoteApplier.releaseAll();
     if (!peerAlreadyConnected) return;
-    // The seat payload carries no peer char; ours determines theirs.
-    hideTouchControlsPad(remoteChar());
+    // Bind this device to the host's own character: keyboard and touch pads
+    // may only drive it from now on; the peer's character is fed
+    // exclusively by the network (see remoteApplier / FBInput.applyRemote).
+    bindLocalSeat();
     // Keep simulating while the host window is unfocused — otherwise the
     // engine's blur auto-pause freezes the game for the remote player.
     adapter.setHostMode(true);
@@ -95,9 +104,10 @@ export function bootstrap(P) {
     overlay.setSessionInfo(currentSessionInfo());
     if (session.isHost && connected) {
       overlay.banner('队友已加入', 2500);
-      // Hide the local pad of the remotely-controlled character so the two
-      // players never fight over the same character.
-      hideTouchControlsPad(session.peer.char);
+      // Bind seats: this device drives only the host's own character; the
+      // peer's character is fed exclusively by network frames (the two
+      // players can never fight over the same character).
+      bindLocalSeat();
       // Keep simulating while the host window is unfocused.
       adapter.setHostMode(true);
       remoteApplier.releaseAll();
@@ -115,6 +125,10 @@ export function bootstrap(P) {
     if (!connected) {
       adapter.setHostMode(false);
       remoteApplier.releaseAll();
+      // Seat binding intentionally KEPT while the peer is away: the seat is
+      // still theirs during the reconnect grace window — if this device's
+      // keyboard drove their character, their held keys would fight ours on
+      // rejoin.
       if (session.isHost) overlay.banner('队友已断开，等待重连…');
     }
   });
@@ -126,12 +140,14 @@ export function bootstrap(P) {
     remoteApplier.releaseAll();
     video.stop();
     document.body.classList.remove('mp-guest-active');
-    restoreTouchControlsPads();
+    // Back to single-player local: both characters controlled here again.
+    unbindLocalSeat();
   });
 
-  // Remote input arriving on the host.
+  // Remote input arriving on the host. The manager tags it 'remote' and
+  // never re-emits it, so frames can never loop back onto the network.
   net.on(P.EVENTS.INPUT_FRAME, (frame) => {
-    remoteApplier.applyFrame(frame, CHAR_KEYS[remoteChar()]);
+    remoteApplier.applyFrame(frame, remoteChar());
   });
   net.on(P.EVENTS.INPUT_POINTER, (ev) => remoteApplier.applyPointer(ev));
   net.on(P.EVENTS.GAME_COMMAND, (cmd) => {
@@ -164,8 +180,10 @@ export function bootstrap(P) {
     video.guestAttach(overlay.video);
     overlay.showGuestVideo();
     if (!guestPads) {
+      // LocalPads binds this device to `char` (the seat the room assigned)
+      // and bridges FBInput local events -> protocol frames. Pads are built
+      // by the shared touch-pads module, not here.
       guestPads = new LocalPads({ bus, char });
-      guestPads.buildPad(document.body);
       bus.on('pads:frame', (frame) => net.emit(P.EVENTS.INPUT_FRAME, frame));
     }
     guestPads.setEnabled(false);
@@ -221,17 +239,21 @@ export function bootstrap(P) {
     return session.char === 'fb' ? 'wg' : 'fb';
   }
 
-  function hideTouchControlsPad(char) {
-    // games/lib/touch-controls.js renders .tc-pad-left (watergirl) and
-    // .tc-pad-right (fireboy). Hide the seat that the guest now owns.
-    const side = char === 'wg' ? 'left' : 'right';
-    const pad = document.querySelector(`.tc-pad-${side}`);
-    if (pad) pad.style.display = 'none';
+  /**
+   * Bind this device to one seat (multiplayer): the unified InputManager
+   * restricts keyboard + touch pads to the assigned character, and the
+   * shared touch-pads module re-renders to show only that seat's pad.
+   */
+  function bindLocalSeat() {
+    if (session.char) input.setLocalRoles([session.char]);
   }
 
-  function restoreTouchControlsPads() {
-    for (const pad of document.querySelectorAll('.tc-pad-left, .tc-pad-right')) {
-      pad.style.display = '';
+  /** Back to single-player local: both characters are ours to drive again. */
+  function unbindLocalSeat() {
+    input.setLocalRoles(null);
+    if (window.FBInputPads) {
+      window.FBInputPads.forceVisible(false);
+      window.FBInputPads.setVisible(true);
     }
   }
 

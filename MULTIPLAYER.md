@@ -9,7 +9,7 @@
 │  运行真正的游戏（Box2D 物理 + Phaser 2.6）  │          │  同一游戏页面在后台空转（菜单态）              │
 │  gameAdapter: 捕获 Phaser.Game 实例        │          │  videoChannel: 接收 WebRTC 流               │
 │  videoChannel: canvas.captureStream ───────┼── RTC ──▶│  #mp-video 全屏显示房主画面                  │
-│  remoteApplier: 合成 KeyboardEvent ─◀──────┼─ Socket ─┤  localPads: 触控垫/键盘 → InputFrame ───────▶│
+│  remoteApplier: 经 FBInput 注入 ─◀──────────┼─ Socket ─┤  localPads: FBInput 本地事件 → InputFrame ─▶│
 │  statusSync: game:status（关卡/暂停）──────▶│          │  pads 仅在 phase=level 时启用               │
 └────────────────────────────────────────────┘          └─────────────────────────────────────────────┘
                         ▲                                               ▲
@@ -37,12 +37,16 @@ games/lib/multiplayer/            浏览器扩展层（原生 ES Module，无构
   net/socketClient.js             Socket.IO 封装（重连、延迟探测、AMD 冲突规避）
   net/videoChannel.js             WebRTC 视频 + 游戏音频捕获
   room/roomSession.js             创建/加入/重连/离开状态机（token 持久化）
-  input/keys.js                   角色→键码映射（源自游戏 CharCursors 真实绑定）
-  input/localPads.js              Guest 触控垫 + 物理键盘捕获 → InputFrame
-  input/remoteApplier.js          Host：帧→合成 KeyboardEvent / MouseEvent 注入
+  input/keys.js                   角色→键码映射（复用统一 InputManager 的唯一事实表）
+  input/localPads.js              Guest 输入桥：FBInput 本地事件 → InputFrame（不再自行捕获输入）
+  input/remoteApplier.js          Host：帧→FBInput.applyRemote 注入；保留 seq 去重与画布鼠标
   adapter/gameAdapter.js          运行时挂钩：捕获 Phaser 实例、阶段检测、暂停注入
   sync/statusSync.js              关卡/暂停状态广播（host→guest）
   ui/{overlay,styles}.js          联机 UI（房间面板、视频层、横幅、状态 chip）
+games/lib/input/                  统一输入层（经典脚本，无依赖，所有页面共用）
+  input-manager.js                InputManager：键盘/触屏/远程三源同入口注入引擎
+  touch-pads.js                   多点触控按钮 UI + 移动端视口/手势加固
+  selftest.mjs                    无头自测（node games/lib/input/selftest.mjs）
 scripts/{dev,start}.{sh,cmd}      开发/生产启动脚本
 ```
 
@@ -53,8 +57,25 @@ scripts/{dev,start}.{sh,cmd}      开发/生产启动脚本
 - 输入默认 `settings.controls === "keyboard"`（`loadSettings` 两个分支都设 keyboard）。
   - Watergirl (`wg`)：`W/A/D`；Fireboy (`fb`)：`↑/←/→` —— `States/Level/CharCursors` 内 `input.keyboard.addKey`。
   - 暂停：`P` 键（Level 状态 `pauseKey.onDown → togglePause`，切换 `game.paused`）。
-  - Phaser Keyboard 在 **window** 上监听 keydown/keyup，按 **`event.keyCode`** 匹配 → 合成 `KeyboardEvent`（`Object.defineProperty` 覆写 keyCode/which）即可注入，与仓库原有 `games/lib/touch-controls.js` 同一机制。
+  - Phaser Keyboard 在 **window** 上监听 keydown/keyup，按 **`event.keyCode`** 匹配 → 合成 `KeyboardEvent`（同时带 `keyCode/which/key/code` 兼容字段）即可注入。统一由 `games/lib/input/input-manager.js` 派发到已验证的监听目标。
   - Phaser Mouse 在 **canvas** 上监听 mousedown/move/up（capture 阶段），读 `clientX/Y` → 合成 `MouseEvent` 即可远程点击菜单/暂停面板。
+
+## 统一输入层（games/lib/input/）
+
+所有本地输入（物理键盘、触屏按钮）与远程网络输入最终都通过同一个入口进入游戏：
+
+```
+物理键盘(可信事件, 观察不注入) ─┐
+触屏按钮(pointer events)      ─┼─▶ FBInput.setAction(role, action, pressed, source) ─▶ 合成 KeyboardEvent ─▶ 引擎(window)
+远程帧(FBInput.applyRemote)   ─┘
+```
+
+- **来源标签**：`source` 区分 `'local' | 'remote'`。远程注入**永不**再作为本地事件发出——网络桥只订阅 `onLocalEvent()`，且管理器直接不 emit 远程事件，双重防回环。键盘观察路径只处理 `event.isTrusted` 事件，注入的合成事件不可能被误当物理输入。
+- **角色座位**：`setLocalRoles(['fb'])` 后，本机键盘/触屏只能驱动该角色；**另一方角色的可信键盘事件在 window 捕获阶段被拦截**（`preventDefault + stopPropagation`，先于引擎的 window 冒泡监听），远程座位只由网络帧驱动。角色由房间分配决定，不存在"远程玩家操作另一角色"。
+- **标准事件接口**：`onEvent(cb)` 收到 `{type:'pressed'|'released', role, action, source, inputKind, seq, timestamp}`；`snapshot()` 输出各角色 `{up,left,right}` 状态。
+- **防卡键**：`blur` / `visibilitychange(hidden)` 释放全部本地按住（远程按住保留——它由对端状态帧同步）；`pagehide` 全部释放；角色移交（`setLocalRoles`）时强制释放离席角色的残留按键。触屏按钮在 `pointerup/pointercancel/lostpointercapture`、document 级安全网、窗口失焦等所有异常路径都会自动释放。
+- **注入目标**：`keyTargets` 默认 `[window]`（六个游戏引擎的键盘监听实测位置），可按需注册 document/元素目标，不凭猜测派发。
+- **触控 UI**（`touch-pads.js`）：每个角色只有"左 / 跳 / 右"三个半透明大按钮（不显示键名），Pointer Events + `setPointerCapture` 实现真多点（按住方向同时跳跃）；移动端默认横屏，处理 Safe Area（`viewport-fit=cover` + `env(safe-area-inset-*)`）、100dvh、全屏+横屏锁定、地址栏变化、双击缩放/页面拖动/长按菜单/文字选择抑制，且所有全局拦截只作用于按钮 UI，不影响游戏 Canvas 事件。触控组件不含任何 Socket.IO 代码。
 - 游戏实例捕获：`window.require('Phaser').GAMES` —— 引擎 `Game` 构造时 `GAMES.push(this)`；`game.state.current` 反映 `menu/levelMenu/level/endGame/…`，`game.level`、`game.paused` 直接可读。
   - 注意 Closure 的 bindAll 模式会把大多数 state 方法绑定为**实例属性**，包装原型方法对 per-frame 调用无效；`create/shutdown` 经 StateManager 属性查找仍可包装，但捕获实例一律以 `Phaser.GAMES` 为准。
 - Service Worker（`games/sw.js`）只把 `/games/<name>/assets/<共享文件>` 重定向到 `games/shared-assets/`，无缓存逻辑；新增代码放在 `games/lib/multiplayer/`（不叫 assets）天然不受影响。
@@ -68,7 +89,7 @@ scripts/{dev,start}.{sh,cmd}      开发/生产启动脚本
   - 页面刷新：sessionStorage 里的 token 先走 rejoin；失败自动回退到 `?room=` 加入。
   - 队友断开：房主端横幅提示，座位保留；队友丢失 token 时可重新加入，服务端允许接管**已断开的 guest 座位**。
   - 房主断开：房间保活 `ROOM_GRACE_MS`（默认 60s，`server/.env` 可调），超时广播 `room:closed` 并销毁。
-- 输入是**状态帧** `{up,left,right,seq}`（变更即发 + 1s 心跳），重连后下一帧即完成再同步；`seq` 单调，乱序旧帧被丢弃。
+- 输入是**状态帧** `{up,left,right,seq}`（变更即发 + 1s 心跳），重连后下一帧即完成再同步；`seq` 单调，乱序旧帧被丢弃。帧的源头是 `games/lib/input/` 统一输入层的本地事件（`onLocalEvent`），见上文"统一输入层"。
 
 ## 启动
 

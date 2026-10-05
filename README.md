@@ -30,7 +30,18 @@ HTML5 version of the Fireboy and Watergirl game series (1-6), deployed as a stat
 | Watergirl | W | A | D |
 | Fireboy | Arrow Up | Arrow Left | Arrow Right |
 
-**Mobile:** Virtual D-pad buttons appear automatically on touch devices.
+**Mobile:** Landscape is the default layout. Each character gets three large
+semi-transparent buttons — left / jump / right — pinned to the screen corners
+(Watergirl left, Fireboy right; no key names shown). Holding a direction while
+jumping works (true multi-touch), and held keys are always released when the
+page loses focus, is hidden, or a touch is interrupted. A rotate hint appears
+in portrait.
+
+All input — physical keyboard, touch buttons, and remote network input —
+flows through one unified manager (`games/lib/input/input-manager.js`),
+which translates everything into the exact key events the game engine
+listens for. See [MULTIPLAYER.md](MULTIPLAYER.md) for the multiplayer input
+path and loop-prevention rules.
 
 ## Project Structure
 
@@ -39,7 +50,12 @@ index.html              # Main game selection page
 games/
   lib/
     require.js          # Shared module loader
-    touch-controls.js   # Mobile touch controls
+    input/
+      input-manager.js  # Unified InputManager (keyboard/touch/remote funnel)
+      touch-pads.js     # Multi-touch pads UI + mobile viewport hardening
+      selftest.mjs      # Headless tests (node games/lib/input/selftest.mjs)
+    multiplayer/        # Online multiplayer extension layer
+    platform-shim.js    # 4399 h5api stub (loading screen fix)
   sw.js                 # Service Worker (shared asset redirect)
   shared-assets/        # Deduplicated common assets
   1-forest-temple/      # Game 1
@@ -48,6 +64,7 @@ games/
   4-crystal-temple/     # Game 4
   5-elements/           # Game 5
   6-fairy-tales/        # Game 6
+server/                 # Node static hosting + room/signaling server
 tools/                  # Build & utility scripts
   restore-assets.sh     # Restore per-game asset copies (remove SW dependency)
   *.py                  # HAR extraction scripts
