@@ -175,6 +175,20 @@ export class GameAdapter {
     return this.canvas;
   }
 
+  /**
+   * Host mode: keep the simulation running when the host's window loses
+   * focus. The engine auto-pauses on window blur (`Game.focusLoss` →
+   * `gamePaused` unless `stage.disableVisibilityChange`), which would
+   * freeze the game out from under a remotely-connected guest the moment
+   * the host clicks into another window. The flag is checked at event
+   * time, so setting it on the live instance is effective immediately.
+   */
+  setHostMode(enabled) {
+    if (!this.game?.stage) return;
+    this.game.stage.disableVisibilityChange = Boolean(enabled);
+    logger.info(`host mode ${enabled ? 'enabled (no auto-pause on blur)' : 'disabled'}`);
+  }
+
   /** Current game phase (or 'unknown' if hooks never attached). */
   getPhase() {
     return this.game ? this.phase : this.P.GAME_PHASES.UNKNOWN;

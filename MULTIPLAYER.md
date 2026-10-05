@@ -116,3 +116,5 @@ Caddy 等价配置只需两行（自动签发证书）。反向代理后设置 `
 4. **菜单导航**：guest 通过远程点击（合成 MouseEvent）操作房主菜单，坐标经过 letterbox 换算；Phaser 的坐标换算在极端缩放比下可能偏移 1–2 像素。
 5. **`new Function` 执行 socket.io 客户端**：部署若加严格 CSP（`script-src` 无 `unsafe-eval`）会禁用联机层（优雅降级为单机）。届时可自行 vendor 无 AMD 检测的 socket.io 构建。
 6. **游戏 5（Elements）多神殿**：状态机一致，但关卡选择树更深，远程点击路径更长；无额外适配。
+7. **房主窗口完全不可见时视频冻结**：浏览器对隐藏页停发 `requestAnimationFrame`，canvas 不再出帧。托管状态已禁用引擎的失焦自动暂停（`stage.disableVisibilityChange`，见下），窗口**可见但失焦**（如双人双窗口并排）完全正常；但最小化或被完全遮挡时视频会冻结——浏览器平台固有限制。
+8. **首次访问与服务 Worker 时序**：GitHub-Pages 部署依赖 `games/sw.js` 把共享资源重定向到 `shared-assets/`；SW 激活前的窗口期浏览器直连请求可能 404（Firefox 上会直接让加载态崩溃）。**Node 服务器部署已内置同样的重写**（服务器启动时解析 `games/sw.js` 的共享清单，`app.js` 直接从 `shared-assets/` 回源），不再依赖 SW 激活时机。

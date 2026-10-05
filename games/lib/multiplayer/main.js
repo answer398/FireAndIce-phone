@@ -71,6 +71,9 @@ export function bootstrap(P) {
     if (!peerAlreadyConnected) return;
     // The seat payload carries no peer char; ours determines theirs.
     hideTouchControlsPad(remoteChar());
+    // Keep simulating while the host window is unfocused — otherwise the
+    // engine's blur auto-pause freezes the game for the remote player.
+    adapter.setHostMode(true);
     const canvas = adapter.getCanvas();
     if (canvas) {
       video.hostStart(canvas).then((ok) => {
@@ -95,6 +98,8 @@ export function bootstrap(P) {
       // Hide the local pad of the remotely-controlled character so the two
       // players never fight over the same character.
       hideTouchControlsPad(session.peer.char);
+      // Keep simulating while the host window is unfocused.
+      adapter.setHostMode(true);
       remoteApplier.releaseAll();
       remoteApplier.lastSeq = -1;
       // (Re)start the video push for this guest.
@@ -108,6 +113,7 @@ export function bootstrap(P) {
       bus.emit('adapter:phase', { phase: adapter.getPhase(), paused: adapter.isPaused() });
     }
     if (!connected) {
+      adapter.setHostMode(false);
       remoteApplier.releaseAll();
       if (session.isHost) overlay.banner('队友已断开，等待重连…');
     }
@@ -116,6 +122,7 @@ export function bootstrap(P) {
   bus.on('session:left', () => {
     overlay.setSessionInfo(null);
     overlay.setHostStatus(null);
+    adapter.setHostMode(false);
     remoteApplier.releaseAll();
     video.stop();
     document.body.classList.remove('mp-guest-active');
