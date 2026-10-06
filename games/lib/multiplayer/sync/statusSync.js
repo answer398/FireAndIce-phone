@@ -42,7 +42,11 @@ export class StatusSync {
   }
 
   #publish({ phase, paused }, immediate = false) {
-    this.latest = { phase, paused, ts: Date.now() };
+    // The level descriptor rides along so the guest can enter the SAME level
+    // (snapshot applier also carries it; status arrives even before the host
+    // is deep enough in the level to produce its first world snapshot).
+    const level = this.adapter.getLevel?.() ?? undefined;
+    this.latest = { phase, paused, ...(level ? { level } : {}), ts: Date.now() };
     const now = Date.now();
     if (!immediate && now - this.lastSentAt < 250) {
       if (!this.pendingSend) {

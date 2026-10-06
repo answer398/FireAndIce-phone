@@ -348,6 +348,21 @@ export function createSocketServer(httpServer, {
       memberSocket(seat.room.getPeer(seat.player))?.emit(EVENTS.GAME_STATUS, payload);
     });
 
+    // ---- host-authoritative world snapshots (host -> guest only) ----
+    // Frequent but small: validated, size-capped, and stamped with the server
+    // clock so the guest can age-check each snapshot. Ordering/dedup is the
+    // guest's job (seq filter) — the relay stays a dumb, verified pipe.
+    socket.on(EVENTS.SYNC_SNAPSHOT, (payload) => {
+      if (!seat || seat.slot !== ROLES.HOST) return;
+      if (!PLAY_RELAY_STATES.has(seat.room.state)) return;
+      const invalid = VALIDATE.snapshot(payload);
+      if (invalid) {
+        log(`room ${seat.room.code}: rejected sync:snapshot (${invalid})`);
+        return;
+      }
+      memberSocket(seat.room.getPeer(seat.player))?.emit(EVENTS.SYNC_SNAPSHOT, { ...payload, st: Date.now() });
+    });
+
     socket.on(EVENTS.RTC_SIGNAL, (payload) => {
       if (!seat) return;
       if (!payload || typeof payload !== 'object' || typeof payload.kind !== 'string' || payload.kind.length > 32) return;

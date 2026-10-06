@@ -14,10 +14,23 @@ export const config = {
   iceServers: [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
   ],
+  /**
+   * Legacy WebRTC video relay (host picture → guest). The guest now
+   * simulates locally and follows host snapshots, so the relay is OFF by
+   * default; enable only for debugging or as a degraded-mode fallback.
+   */
+  videoRelay: false,
   /** Video capture frame rate for the host -> guest stream. */
   videoFps: 30,
+  /**
+   * Host -> guest world snapshot rate (Hz). The guest simulates locally, so
+   * this only bounds correction latency: 10–20Hz is the useful band — below
+   * 10 the guest drifts visibly between corrections, above 20 the JSON costs
+   * more than the corrections buy.
+   */
+  snapshotHz: 15,
   /** Heartbeat for guest input frames even when nothing changed (ms). */
-  inputHeartbeatMs: 1000,
+  inputHeartbeatMs: 250,
   /** Status broadcast throttle while values keep changing (ms). */
   statusThrottleMs: 250,
   /** Latency probe interval (ms). */

@@ -21,7 +21,9 @@ import { RemoteApplier } from './input/remoteApplier.js';
 import { LocalPads } from './input/localPads.js';
 import { VideoChannel, hookGameAudioOnce } from './net/videoChannel.js';
 import { StatusSync, GuestStatusTracker } from './sync/statusSync.js';
+import { SnapshotSender, GuestSnapshotApplier } from './sync/snapshotSync.js';
 import { Overlay } from './ui/overlay.js';
+import { DebugHud } from './ui/hud.js';
 
 export function bootstrap(P) {
   if (urlFlags.off) {
@@ -47,20 +49,32 @@ export function bootstrap(P) {
   const session = new RoomSession({ bus, net, P });
   void net.connect();
 
-  // 2. Game observation (host + guest both run the page; only the host's
-  //    instance drives the actual game).
+  // 2. Game observation (host + guest both run the page; the host's instance
+  //    is the simulation authority, the guest's is local prediction).
   const adapter = new GameAdapter({ bus, P });
+  adapter.detect();
 
-  // 3. Host-side pieces: remote input application, video capture, status.
+  // 3. Host-side pieces: remote input application, status + snapshot sync.
   const remoteApplier = new RemoteApplier({ P });
-  hookGameAudioOnce();
-  const video = new VideoChannel({
-    bus,
-    net,
-    P,
-    iceServers: config.iceServers,
-    videoFps: config.videoFps,
+  // Audio capture only matters when the legacy video relay is active.
+  if (config.videoRelay) hookGameAudioOnce();
+  // WebRTC video relay is legacy now: the guest simulates locally and follows
+  // host snapshots, so it neither needs the host's picture nor remote menu
+  // clicks. Kept behind a flag for debugging/fallback.
+  const video = config.videoRelay
+    ? new VideoChannel({ bus, net, P, iceServers: config.iceServers, videoFps: config.videoFps })
+    : null;
+
+  // 3b. Host-authoritative world sync (see sync/snapshotSync.js).
+  const snapshotSender = new SnapshotSender({
+    bus, net, session, adapter, P,
+    hz: config.snapshotHz,
+    getAck: () => remoteApplier.lastSeq,
   });
+  const snapshotApplier = new GuestSnapshotApplier({ bus, net, session, adapter, P });
+
+  // 3c. Developer diagnostics (?mpDebug=1). Production pages never mount it.
+  const debugHud = new DebugHud({ bus, net, session, adapter, P, visible: urlFlags.debug });
 
   // 4. UI
   const overlay = new Overlay({ bus, mount: document.body });
@@ -221,9 +235,9 @@ export function bootstrap(P) {
       adapter.setHostMode(true);
       remoteApplier.releaseAll();
       remoteApplier.lastSeq = -1;
-      // (Re)start the video push for this guest.
+      // (Re)start the video push for this guest (legacy relay, optional).
       const canvas = adapter.getCanvas();
-      if (canvas) void video.hostStart(canvas);
+      if (video && canvas) void video.hostStart(canvas);
       // Tell the guest what phase we are in right now.
       bus.emit('adapter:phase', { phase: adapter.getPhase(), paused: adapter.isPaused() });
     }
@@ -244,7 +258,7 @@ export function bootstrap(P) {
     overlay.chip.removeAttribute('data-role');
     adapter.setHostMode(false);
     remoteApplier.releaseAll();
-    video.stop();
+    if (video) video.stop();
     document.body.classList.remove('mp-guest-active');
     boundChar = null;
     // Back to single-player local: both characters controlled here again.
@@ -267,7 +281,7 @@ export function bootstrap(P) {
     // engine's blur auto-pause freezes the game for the remote player.
     adapter.setHostMode(true);
     const canvas = adapter.getCanvas();
-    if (canvas) {
+    if (video && canvas) {
       video.hostStart(canvas).then((ok) => {
         hostStreamStarted = ok;
       });
@@ -279,17 +293,19 @@ export function bootstrap(P) {
   // never re-emits it, so frames can never loop back onto the network.
   net.on(P.EVENTS.INPUT_FRAME, (frame) => {
     remoteApplier.applyFrame(frame, remoteChar());
+    debugHud?.setGuestCorrections(frame.c ?? null);
   });
   net.on(P.EVENTS.INPUT_POINTER, (ev) => remoteApplier.applyPointer(ev));
   net.on(P.EVENTS.GAME_COMMAND, (cmd) => {
     if (cmd?.type === P.GAME_COMMANDS.PAUSE_TOGGLE) adapter.togglePause();
+    if (cmd?.type === P.GAME_COMMANDS.LEVEL_RESTART) adapter.restart();
   });
 
   // Canvas becomes available: attach pointer target; (re)start stream if a
   // guest is already seated (covers reload while seated).
   bus.on('adapter:canvas', (canvas) => {
     remoteApplier.attachCanvas(canvas);
-    if (session.isHost && session.peer.connected && !hostStreamStarted) {
+    if (video && session.isHost && session.peer.connected && !hostStreamStarted) {
       void video.hostStart(canvas);
     }
   });
@@ -307,14 +323,22 @@ export function bootstrap(P) {
 
   bus.on('session:joined', ({ role, char }) => {
     if (role !== P.ROLES.GUEST) return;
-    // Bind the incoming WebRTC stream to the overlay video element.
-    video.guestAttach(overlay.video);
-    overlay.showGuestVideo();
+    // The guest plays on its OWN game instance now: local simulation for
+    // low-latency feedback, host snapshots as the authority (snapshotSync.js).
+    // The legacy video overlay stays off unless config.videoRelay is enabled.
+    if (video) {
+      video.guestAttach(overlay.video);
+      overlay.showGuestVideo();
+    }
     if (!guestPads) {
       // LocalPads binds this device to `char` (the seat the room assigned)
-      // and bridges FBInput local events -> protocol frames.
+      // and bridges FBInput local events -> protocol frames. Each frame also
+      // carries the guest's snapshot-correction count for the debug HUD.
       guestPads = new LocalPads({ bus, char });
-      bus.on('pads:frame', (frame) => net.emit(P.EVENTS.INPUT_FRAME, frame));
+      bus.on('pads:frame', (frame) => {
+        const corrections = snapshotApplier.takeCorrections();
+        net.emit(P.EVENTS.INPUT_FRAME, corrections > 0 ? { ...frame, c: corrections } : frame);
+      });
     } else {
       guestPads.destroy();
       guestPads = new LocalPads({ bus, char });
@@ -323,11 +347,12 @@ export function bootstrap(P) {
     updateGuestPads();
   });
 
-  net.on(P.EVENTS.RTC_SIGNAL, () => {}); // handled inside VideoChannel
-
   bus.on('host:status', (status) => {
     lastHostStatus = { ...status, receivedAt: Date.now() };
     overlay.setHostStatus(status);
+    // Pause parity from the status channel (snapshots also carry it; both
+    // paths are idempotent — setPaused only toggles when they differ).
+    if (typeof status?.paused === 'boolean') adapter.setPaused(status.paused);
     updateGuestPads();
   });
 
@@ -420,6 +445,13 @@ export function bootstrap(P) {
 
   logger.info('bootstrapped');
 
+  // Debug-only test handle (?mpDebug=1): lets the dev harness drive the exact
+  // production code paths (adapter/session) without touching game files.
+  // Never present on normal pages.
+  if (urlFlags.debug) {
+    window.__mpDebug = { adapter, session, net, snapshotSender, snapshotApplier };
+  }
+
   // Lightweight introspection for support/diagnostics (`?mpDebug=1`).
   window.__mpState = () => ({
     net: net.state,
@@ -432,14 +464,34 @@ export function bootstrap(P) {
     peer: session.peer,
     phase: adapter.getPhase(),
     paused: adapter.isPaused(),
+    level: adapter.getLevel(),
     loadedReported,
     hasGame: Boolean(adapter.game),
     hasLevel: Boolean(adapter.level),
     lastHostStatus,
     statusSyncSent: statusSync?.sentCount ?? null,
-    videoState: {
-      srcAttached: Boolean(overlay.video?.srcObject),
-      width: overlay.video?.videoWidth ?? 0,
+    // Host-authoritative sync (see sync/snapshotSync.js).
+    sync: {
+      hz: config.snapshotHz,
+      host: session.isHost
+        ? { sent: snapshotSender.sentCount ?? 0, seq: snapshotSender.seq, lastAck: remoteApplier.lastSeq }
+        : {
+            received: snapshotApplier.receivedCount ?? 0,
+            dropped: snapshotApplier.droppedCount ?? 0,
+            seq: snapshotApplier.lastSeq,
+            hostAck: snapshotApplier.lastAck,
+            ageMs: snapshotApplier.lastAgeMs,
+            corrections: snapshotApplier.correctionsTotal,
+            soft: snapshotApplier.correctionsSoft,
+            hard: snapshotApplier.correctionsHard,
+            discrete: snapshotApplier.correctionsDiscrete,
+          },
     },
+    videoState: config.videoRelay
+      ? {
+          srcAttached: Boolean(overlay.video?.srcObject),
+          width: overlay.video?.videoWidth ?? 0,
+        }
+      : null,
   });
 }

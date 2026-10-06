@@ -85,6 +85,25 @@ const emitAck = (socket, event, payload, timeoutMs = 3000) =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** A protocol-valid snapshot payload (mirrors the adapter's schema). */
+const validSnapshot = () => ({
+  seq: 42,
+  ack: 17,
+  snap: {
+    lvl: { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' },
+    ch: [
+      [96, 860.5, 0, 0, true, 2, 0, 'idle'],
+      [96, 732.5, 0, 0, true, 1, 0, 'idle'],
+    ],
+    di: [['pusher', 992, 352]],
+    dv: [[0, 992, 352, 0, 0, null]],
+    gi: [['wg', 752, 464]],
+    dm: [],
+    dr: [[false, 3, false]],
+    lv: { s: true, e: 0, p: false },
+  },
+});
+
 /** Resolves with the first room:state payload arriving AFTER the call that
  * matches `pred`. Only new events count — not the current room contents. */
 const waitState = (socket, pred, timeoutMs = 3000) =>
@@ -300,6 +319,63 @@ async function main() {
     guest.emit(EVENTS.INPUT_FRAME, null);
     await sleep(100);
     assert.equal(got2, false);
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  // ---- host-authoritative snapshot relay --------------------------------------
+  test('snapshots: host→guest only, validated, stamped with server time', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+
+    // Guest seat can never push snapshots at the host seat.
+    let guestGot = false;
+    guest.once(EVENTS.SYNC_SNAPSHOT, () => (guestGot = true));
+    const snap = validSnapshot();
+    guest.emit(EVENTS.SYNC_SNAPSHOT, { ...snap, seq: 1 });
+    await sleep(120);
+    assert.equal(guestGot, false, 'guest seat must not relay snapshots');
+
+    // Gated outside play states (waiting room).
+    const { host: host2, guest: guest2 } = await seatRoom(port);
+    let got2 = false;
+    guest2.once(EVENTS.SYNC_SNAPSHOT, () => (got2 = true));
+    host2.emit(EVENTS.SYNC_SNAPSHOT, { ...snap, seq: 1 });
+    await sleep(120);
+    assert.equal(got2, false, 'snapshots must not flow before the start gate');
+    host2.disconnect();
+    guest2.disconnect();
+
+    // In play states the host snapshot reaches the guest with a server stamp.
+    let relayed = null;
+    guest.once(EVENTS.SYNC_SNAPSHOT, (p) => (relayed = p));
+    host.emit(EVENTS.SYNC_SNAPSHOT, snap);
+    relayed = await waitEvent(guest, EVENTS.SYNC_SNAPSHOT);
+    assert.equal(relayed.seq, snap.seq);
+    assert.equal(relayed.ack, snap.ack);
+    assert.equal(typeof relayed.st, 'number', 'server timestamp added at relay');
+    assert.equal(relayed.snap.ch.length, 2);
+    assert.deepEqual(relayed.snap.ch[0], snap.snap.ch[0], 'payload relayed unmodified');
+
+    // Malformed payloads are swallowed (bad ack / wrong ch length / bad lv).
+    let bad = 0;
+    guest.once(EVENTS.SYNC_SNAPSHOT, () => (bad += 1));
+    host.emit(EVENTS.SYNC_SNAPSHOT, { ...snap, seq: 2, ack: 'nope' });
+    host.emit(EVENTS.SYNC_SNAPSHOT, { seq: 3, ack: 1, snap: { ...snap.snap, ch: [[0, 0, 0, 0, true, 0, 0]] } });
+    host.emit(EVENTS.SYNC_SNAPSHOT, { seq: 4, ack: 1, snap: { ...snap.snap, lv: { s: true, e: 9, p: false } } });
+    host.emit(EVENTS.SYNC_SNAPSHOT, null);
+    await sleep(150);
+    assert.equal(bad, 0, 'invalid snapshots must never reach the guest');
+
+    // Skip-unchanged mini snapshots pass validation without a snap field.
+    let mini = null;
+    guest.once(EVENTS.SYNC_SNAPSHOT, (p) => (mini = p));
+    host.emit(EVENTS.SYNC_SNAPSHOT, { seq: 5, ack: 7, same: true });
+    mini = await waitEvent(guest, EVENTS.SYNC_SNAPSHOT);
+    assert.equal(mini.same, true);
+    assert.equal(mini.ack, 7);
+    assert.equal(mini.snap, undefined);
+
     host.disconnect();
     guest.disconnect();
   }));

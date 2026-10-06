@@ -14,3 +14,4 @@ npm-debug.log*
 # OS noise
 .DS_Store
 Thumbs.db
+server-run.log

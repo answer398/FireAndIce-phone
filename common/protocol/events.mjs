@@ -12,7 +12,7 @@
  * Hardcoding event names anywhere else is a bug.
  */
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Socket.IO event names. */
 export const EVENTS = {
@@ -62,6 +62,11 @@ export const EVENTS = {
 
   // ---- status broadcast (host -> server -> guest) ----
   GAME_STATUS: 'game:status',
+
+  // ---- state snapshots (host -> server -> guest, host-authoritative) ----
+  /** {seq, ack, same?, snap, st?} — periodic world snapshot; `st` is added by
+   * the server at relay time. `same` marks a skip-unchanged mini snapshot. */
+  SYNC_SNAPSHOT: 'sync:snapshot',
 
   // ---- WebRTC video signaling (both peers -> server -> other peer) ----
   RTC_SIGNAL: 'rtc:signal',
@@ -142,6 +147,8 @@ export function oppositeChar(char) {
 /** Guest -> host game command types (EVENTS.GAME_COMMAND payload). */
 export const GAME_COMMANDS = {
   PAUSE_TOGGLE: 'pause-toggle',
+  /** Guest asks the host to restart the current level. */
+  LEVEL_RESTART: 'level-restart',
 };
 
 /** Why a room closed (EVENTS.ROOM_CLOSED payload.reason). */
@@ -183,6 +190,103 @@ export const ROOM_ERRORS = {
   /** Unknown game id. */
   GAME_NOT_FOUND: 'game-not-found',
 };
+
+/**
+ * Host -> guest world snapshot (EVENTS.SYNC_SNAPSHOT payload).
+ *
+ * The host is the ONLY simulation authority: it runs the real game and
+ * broadcasts compact snapshots at SYNC_HZ. The guest keeps simulating locally
+ * for low-latency feedback and applies each snapshot through the game
+ * adapter's threshold correction (soft position lerp, hard snap).
+ *
+ * {
+ *   seq: 12,              // monotonic snapshot counter (host)
+ *   ack: 41,              // last guest input:frame seq the host processed
+ *   same: true?,          // skip-unchanged: everything below is omitted
+ *   st: 1710000000000,    // server clock at relay (added by the server)
+ *   snap: {
+ *     lvl: { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' },
+ *     ch: [                                 // pers1 (fb), pers2 (wg)
+ *       { x, y, vx, vy, f, a, d, s },       // px pos, px/s vel, facing,
+ *                                           // alive, diamonds, silverDiamonds
+ *       { ... },
+ *     ],
+ *     di: [['pusher', 992, 352], ...],      // device identity (options.type/x/y)
+ *     dv: [[state, bx, by, bvx, bvy, ja], ...],   // per-device: state int,
+ *                                           // body px pos/vel, lever joint angle
+ *     gi: [['wg', 752, 464], ...],          // gem identity (char + tilemap xy)
+ *     dm: [0, 3, ...],                      // collected gem indexes into gi
+ *     dr: [[isOpen, currentFrac, isUp], ...],     // door1 (fb), door2 (wg)
+ *     lv: { s: levelStarted, e: 0|1|2, p: paused }, // ended: 0 none, 1 win, 2 dead
+ *   },
+ * }
+ *
+ * All numeric fields are bounded and rounded by the adapter before send.
+ */
+
+/** Snapshot payload validator (merged into VALIDATE below). */
+const num = (v) => typeof v === 'number' && Number.isFinite(v);
+const isInt = (v) => Number.isInteger(v) && v >= 0;
+/** Char body tuple: x,y,vx,vy in [-5000, 5000]; f string; a bool; d,s counts. */
+function validChar(ch) {
+  if (!Array.isArray(ch) || ch.length !== 8) return false;
+  return [0, 1, 2, 3].every((i) => num(ch[i]) && Math.abs(ch[i]) <= 5000) &&
+    typeof ch[4] === 'boolean' && isInt(ch[5]) && isInt(ch[6]) &&
+    (ch[7] === null || typeof ch[7] === 'string');
+}
+
+function snapshotValidator(payload) {
+    if (!payload || typeof payload !== 'object') return 'snapshot must be an object';
+    if (!isInt(payload.seq)) return 'bad seq';
+    if (payload.ack !== -1 && !isInt(payload.ack)) return 'bad ack';
+    if (payload.same) return null; // mini snapshot: no snap field
+    const s = payload.snap;
+    if (!s || typeof s !== 'object') return 'snap must be an object';
+    if (s.lvl !== undefined && (typeof s.lvl !== 'object' || s.lvl === null)) return 'bad lvl';
+    if (s.lvl) {
+      if (typeof s.lvl.temple !== 'string' || s.lvl.temple.length > 60) return 'bad lvl.temple';
+      if (!isInt(s.lvl.id)) return 'bad lvl.id';
+      if (typeof s.lvl.filename !== 'string' || s.lvl.filename.length > 120) return 'bad lvl.filename';
+    }
+    if (!Array.isArray(s.ch) || s.ch.length !== 2 || !s.ch.every(validChar)) return 'bad ch';
+    if (!Array.isArray(s.di) || s.di.length > 64) return 'bad di';
+    for (const d of s.di) {
+      if (!Array.isArray(d) || d.length !== 3 || typeof d[0] !== 'string' || d[0].length > 24 ||
+        !num(d[1]) || !num(d[2])) return 'bad di entry';
+    }
+    if (!Array.isArray(s.dv) || s.dv.length > 64 || s.dv.length !== s.di.length) return 'bad dv';
+    for (const d of s.dv) {
+      if (!Array.isArray(d) || d.length !== 6) return 'bad dv entry';
+      if (!isInt(d[0]) || d[0] > 9) return 'bad dv state';
+      for (let i = 1; i < 6; i++) {
+        if (d[i] !== null && (!num(d[i]) || Math.abs(d[i]) > 5000)) return 'bad dv value';
+      }
+    }
+    if (!Array.isArray(s.gi) || s.gi.length > 64) return 'bad gi';
+    for (const g of s.gi) {
+      if (!Array.isArray(g) || g.length !== 3 || typeof g[0] !== 'string' || g[0].length > 8 ||
+        !num(g[1]) || !num(g[2])) return 'bad gi entry';
+    }
+    if (!Array.isArray(s.dm) || s.dm.length > s.gi.length || !s.dm.every(isInt)) return 'bad dm';
+    if (!Array.isArray(s.dr) || s.dr.length > 2) return 'bad dr';
+    for (const d of s.dr) {
+      if (!Array.isArray(d) || d.length !== 3 || typeof d[0] !== 'boolean' ||
+        !num(d[1]) || typeof d[2] !== 'boolean') return 'bad dr entry';
+    }
+    if (!s.lv || typeof s.lv !== 'object') return 'bad lv';
+    if (typeof s.lv.s !== 'boolean' || typeof s.lv.p !== 'boolean') return 'bad lv flags';
+    if (!isInt(s.lv.e) || s.lv.e > 2) return 'bad lv.e';
+    return null;
+}
+
+function inputFrameValidator(frame) {
+    if (!frame || typeof frame !== 'object') return 'frame must be an object';
+    if (typeof frame.seq !== 'number' || frame.seq < 0) return 'bad seq';
+    for (const key of Object.values(INPUT_ACTIONS)) {
+      if (typeof frame[key] !== 'boolean') return `bad ${key}`;
+    }
+    return null;
+}
 
 /**
  * Input frame field names (EVENTS.INPUT_FRAME payload).
@@ -255,12 +359,16 @@ export const LIMITS = {
  * Each returns null when valid, otherwise a short error string.
  */
 export const VALIDATE = {
+  snapshot(payload) {
+    return snapshotValidator(payload);
+  },
+
   inputFrame(frame) {
-    if (!frame || typeof frame !== 'object') return 'frame must be an object';
-    if (typeof frame.seq !== 'number' || frame.seq < 0) return 'bad seq';
-    for (const key of Object.values(INPUT_ACTIONS)) {
-      if (typeof frame[key] !== 'boolean') return `bad ${key}`;
-    }
+    const invalid = inputFrameValidator(frame);
+    if (invalid) return invalid;
+    // Optional guest -> host diagnostics: count of snapshot corrections since
+    // the previous frame (for the host-side debug HUD).
+    if (frame.c !== undefined && (!Number.isInteger(frame.c) || frame.c < 0 || frame.c > 10_000)) return 'bad c';
     return null;
   },
 
@@ -276,6 +384,14 @@ export const VALIDATE = {
     if (!status || typeof status !== 'object') return 'status must be an object';
     if (!Object.values(GAME_PHASES).includes(status.phase)) return 'bad phase';
     if (status.paused !== undefined && typeof status.paused !== 'boolean') return 'bad paused';
+    // Optional level descriptor: the guest enters the SAME level the host is in.
+    if (status.level !== undefined) {
+      const lv = status.level;
+      if (typeof lv !== 'object' || lv === null) return 'bad level';
+      if (typeof lv.temple !== 'string' || lv.temple.length > 60) return 'bad level.temple';
+      if (!Number.isInteger(lv.id) || lv.id < 0) return 'bad level.id';
+      if (typeof lv.filename !== 'string' || lv.filename.length > 120) return 'bad level.filename';
+    }
     return null;
   },
 
