@@ -86,9 +86,10 @@ const emitAck = (socket, event, payload, timeoutMs = 3000) =>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** A protocol-valid snapshot payload (mirrors the adapter's schema). */
-const validSnapshot = () => ({
+const validSnapshot = (r = 0) => ({
   seq: 42,
   ack: 17,
+  r,
   snap: {
     lvl: { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' },
     ch: [
@@ -288,12 +289,12 @@ async function main() {
     await bothReady({ host, guest });
     let hostGot = false;
     host.once(EVENTS.GAME_STATUS, () => (hostGot = true));
-    guest.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: false }); // forged: guest seat
+    guest.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: false, r: 0 }); // forged: guest seat
     await sleep(120);
     assert.equal(hostGot, false, 'forged status must not relay');
-    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: true });
+    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: true, r: 0 });
     await waitState(guest, (s) => s.state === ROOM_STATES.PAUSED);
-    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: false });
+    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: false, r: 0 });
     await waitState(guest, (s) => s.state === ROOM_STATES.PLAYING);
     host.disconnect();
     guest.disconnect();
@@ -303,12 +304,16 @@ async function main() {
     const { host, guest } = await seatRoom(port);
     let got = false;
     guest.once(EVENTS.INPUT_FRAME, () => (got = true));
-    host.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 1 }); // host seat: never
-    guest.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 1 }); // waiting: gated
+    host.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 1, r: 0 }); // host seat: never
+    guest.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 1, r: 0 }); // waiting: gated
     await sleep(120);
     assert.equal(got, false);
     await bothReady({ host, guest });
-    guest.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 2 });
+    // Establish round 0 first (as the real client does via status/round:event);
+    // frames from a round the server does not know yet are dropped.
+    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: false, r: 0 });
+    await sleep(80);
+    guest.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 2, r: 0 });
     const frame = await waitEvent(host, EVENTS.INPUT_FRAME);
     assert.equal(frame.seq, 2);
     assert.equal(frame.up, true);
@@ -370,7 +375,7 @@ async function main() {
     // Skip-unchanged mini snapshots pass validation without a snap field.
     let mini = null;
     guest.once(EVENTS.SYNC_SNAPSHOT, (p) => (mini = p));
-    host.emit(EVENTS.SYNC_SNAPSHOT, { seq: 5, ack: 7, same: true });
+    host.emit(EVENTS.SYNC_SNAPSHOT, { seq: 5, ack: 7, r: 0, same: true });
     mini = await waitEvent(guest, EVENTS.SYNC_SNAPSHOT);
     assert.equal(mini.same, true);
     assert.equal(mini.ack, 7);
@@ -518,7 +523,7 @@ async function main() {
   test('finished level: host status phase=end → finished, fresh ready required', M(async (port) => {
     const { host, guest } = await seatRoom(port);
     await bothReady({ host, guest });
-    host.emit(EVENTS.GAME_STATUS, { phase: 'end', paused: false });
+    host.emit(EVENTS.GAME_STATUS, { phase: 'end', paused: false, r: 0 });
     const finished = await waitState(guest, (s) => s.state === ROOM_STATES.FINISHED);
     assert.equal(finished.players.host.ready, false, 'ready flags reset for the next level');
     assert.equal(finished.players.guest.ready, false);
@@ -526,6 +531,188 @@ async function main() {
     guest.emit(EVENTS.ROOM_READY, { ready: true });
     await waitState(guest, (s) => s.state === ROOM_STATES.COUNTDOWN);
     await waitEvent(guest, EVENTS.ROOM_START);
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  // ---- game lifecycle rounds (host reports, server assigns, guests follow) ----
+  test('round:event: guest seat rejected; host enter opens round 1 and broadcasts round:update', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+    const level = { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' };
+
+    // Guest seat can never open/mutate a round.
+    let hostGotUpdate = 0;
+    host.on(EVENTS.ROUND_UPDATE, () => (hostGotUpdate += 1));
+    guest.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    await sleep(120);
+    assert.equal(hostGotUpdate, 0, 'guest round:event must be rejected');
+
+    // Host enter → round 1 broadcast to BOTH seats.
+    const stateP = waitState(guest, (s) => s.round && s.round.id === 1);
+    const hostUpdP = waitEvent(host, EVENTS.ROUND_UPDATE);
+    const guestUpdP = waitEvent(guest, EVENTS.ROUND_UPDATE);
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    const hostUpd = await hostUpdP;
+    const guestUpd = await guestUpdP;
+    assert.equal(hostUpd.round.id, 1);
+    assert.equal(hostUpd.round.phase, 'playing');
+    assert.deepEqual(hostUpd.round.level, level);
+    assert.deepEqual(guestUpd.round, hostUpd.round, 'both seats see the same round');
+    // The round is part of the authoritative room projection too.
+    const state = await stateP;
+    assert.equal(state.round.level.id, 1);
+    assert.equal(typeof state.sid, 'string', 'session id exposed');
+    assert.equal(typeof state.rev, 'number', 'projection revision exposed');
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  test('duplicate enter for the live round is a no-op (idempotent)', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+    const level = { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' };
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    await waitEvent(guest, EVENTS.ROUND_UPDATE);
+    let updates = 0;
+    guest.on(EVENTS.ROUND_UPDATE, () => (updates += 1));
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    await sleep(150);
+    assert.equal(updates, 0, 're-entering the live round must not re-broadcast');
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  test('stale-round packets are dropped: old r never reaches the peer or the state machine', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+    const level = { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' };
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    await waitEvent(guest, EVENTS.ROUND_UPDATE); // round 1 live
+
+    // Old-round snapshot (r=0 < 1): dropped, never relayed.
+    let guestGotSnap = false;
+    guest.on(EVENTS.SYNC_SNAPSHOT, () => (guestGotSnap = true));
+    host.emit(EVENTS.SYNC_SNAPSHOT, { ...validSnapshot(0), seq: 1 });
+    await sleep(120);
+    assert.equal(guestGotSnap, false, 'old-round snapshot must be dropped');
+
+    // Old-round input frame: dropped, host sim untouched.
+    let hostGotFrame = false;
+    host.on(EVENTS.INPUT_FRAME, () => (hostGotFrame = true));
+    guest.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 1, r: 0 });
+    await sleep(120);
+    assert.equal(hostGotFrame, false, 'old-round input frame must be dropped');
+
+    // Old-round 'end': must NOT finish the room (the state broadcast that
+    // carries round.id===1 was already consumed above; this round's state
+    // stays PLAYING — verified via a fresh subscription + the mini snapshot
+    // relay below, which the state gate would block if we had finished).
+    host.emit(EVENTS.GAME_STATUS, { phase: 'end', paused: false, r: 0 });
+    await sleep(120);
+    let sawEndState = null;
+    guest.on(EVENTS.ROOM_STATE, (s) => (sawEndState = s));
+    await sleep(50);
+    assert.ok(!sawEndState || sawEndState.state !== ROOM_STATES.FINISHED, 'stale end must not finish the room');
+
+    // Current-round traffic passes.
+    const snapP = waitEvent(guest, EVENTS.SYNC_SNAPSHOT);
+    host.emit(EVENTS.SYNC_SNAPSHOT, { ...validSnapshot(1), seq: 2 });
+    const snap = await snapP;
+    assert.equal(snap.r, 1);
+    guest.emit(EVENTS.INPUT_FRAME, { up: true, left: false, right: false, seq: 2, r: 1 });
+    const frame = await waitEvent(host, EVENTS.INPUT_FRAME);
+    assert.equal(frame.r, 1);
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  test('restart opens a NEW roundId for the same level; different level → new round too', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+    const level1 = { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' };
+    const level2 = { temple: 'forest', id: 2, filename: 'forest/levels/forest_02.json' };
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level: level1 });
+    const upd1 = await waitEvent(guest, EVENTS.ROUND_UPDATE);
+    assert.equal(upd1.round.id, 1);
+
+    host.emit(EVENTS.ROUND_EVENT, { type: 'restart', level: level1 });
+    const upd2 = await waitEvent(guest, EVENTS.ROUND_UPDATE);
+    assert.equal(upd2.round.id, 2, 'restart always allocates a fresh roundId');
+    assert.equal(upd2.reason, 'restart');
+    assert.deepEqual(upd2.round.level, level1);
+
+    // Now the OLD round id must be dead: snapshot r=1 dropped.
+    let guestGotSnap = false;
+    guest.on(EVENTS.SYNC_SNAPSHOT, () => (guestGotSnap = true));
+    host.emit(EVENTS.SYNC_SNAPSHOT, { ...validSnapshot(1), seq: 9 });
+    await sleep(120);
+    assert.equal(guestGotSnap, false, 'snapshot stamped with the pre-restart round must be dropped');
+
+    host.emit(EVENTS.ROUND_EVENT, { type: 'leave' });
+    const updLeave = await waitEvent(guest, EVENTS.ROUND_UPDATE);
+    assert.equal(updLeave.round.phase, 'idle');
+    assert.equal(updLeave.round.id, 2, 'leave keeps the roundId (old packets stay droppable)');
+
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level: level2 });
+    const upd3 = await waitEvent(guest, EVENTS.ROUND_UPDATE);
+    assert.equal(upd3.round.id, 3, 'entering the next level opens a new round');
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  test('status/snapshot adoption: a payload racing ahead of round:event opens its round', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+    const level = { temple: 'forest', id: 7, filename: 'forest/levels/forest_07.json' };
+    // Status with r=5 (no round reported yet): implicit adopt + broadcast.
+    const updP = waitEvent(guest, EVENTS.ROUND_UPDATE);
+    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: false, r: 5, level });
+    const upd = await updP;
+    assert.equal(upd.round.id, 5);
+    assert.equal(upd.reason, 'adopted');
+    assert.deepEqual(upd.round.level, level);
+    // Snapshot for that round relays; an older one is stale.
+    let got5 = false;
+    let got4 = false;
+    guest.on(EVENTS.SYNC_SNAPSHOT, (p) => {
+      if (p.r === 5) got5 = true;
+      if (p.r === 4) got4 = true;
+    });
+    host.emit(EVENTS.SYNC_SNAPSHOT, { ...validSnapshot(4), seq: 1 });
+    host.emit(EVENTS.SYNC_SNAPSHOT, { ...validSnapshot(5), seq: 2 });
+    await sleep(150);
+    assert.equal(got5, true, 'current-round snapshot relays');
+    assert.equal(got4, false, 'pre-adoption snapshot is stale');
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  test('current-round end finishes the room (fresh ready required); round id kept', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+    const level = { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' };
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    await waitEvent(guest, EVENTS.ROUND_UPDATE);
+    host.emit(EVENTS.GAME_STATUS, { phase: 'end', paused: false, r: 1 });
+    const finished = await waitState(guest, (s) => s.state === ROOM_STATES.FINISHED);
+    assert.equal(finished.round.id, 1, 'round identity survives the finish');
+    assert.equal(finished.players.host.ready, false);
+    host.disconnect();
+    guest.disconnect();
+  }));
+
+  test('snapshot without r is rejected by the protocol validator', M(async (port) => {
+    const { host, guest } = await seatRoom(port);
+    await bothReady({ host, guest });
+    let got = false;
+    guest.on(EVENTS.SYNC_SNAPSHOT, () => (got = true));
+    const snap = validSnapshot(0);
+    delete snap.r;
+    host.emit(EVENTS.SYNC_SNAPSHOT, snap);
+    await sleep(120);
+    assert.equal(got, false, 'v4 requires the round stamp on gameplay payloads');
     host.disconnect();
     guest.disconnect();
   }));
@@ -574,6 +761,35 @@ async function main() {
     assert.equal(state.players.guest.ready, true);
     host.disconnect();
     guest2.disconnect();
+  }));
+
+  test('mid-round disconnect keeps the round; rejoin restores it and traffic flows again', M(async (port) => {
+    const { host, guest, guestSeat } = await seatRoom(port);
+    await bothReady({ host, guest });
+    const level = { temple: 'forest', id: 1, filename: 'tutorials/levels/forest_01.json' };
+    host.emit(EVENTS.ROUND_EVENT, { type: 'enter', level });
+    await waitEvent(guest, EVENTS.ROUND_UPDATE);
+
+    guest.disconnect();
+    const reconnectingP = waitState(host, (s) => s.state === ROOM_STATES.RECONNECTING && s.round && s.round.id === 1);
+    await waitState(host, (s) => s.state === ROOM_STATES.RECONNECTING);
+    const rec = await reconnectingP;
+    assert.equal(rec.round.phase, 'playing', 'the live round survives the grace window');
+
+    const guest2 = client(port);
+    const playingP = waitState(guest2, (s) => s.state === ROOM_STATES.PLAYING);
+    const roundP = waitState(guest2, (s) => s.round && s.round.id === 1);
+    await emitAck(guest2, EVENTS.ROOM_REJOIN, { token: guestSeat.token });
+    await playingP;
+    // The rejoin projection carries the round so a refreshed page resumes it.
+    const st = await roundP;
+    assert.deepEqual(st.round.level, level);
+    // Current-round traffic flows again after recovery.
+    const snapP = waitEvent(guest2, EVENTS.SYNC_SNAPSHOT);
+    host.emit(EVENTS.SYNC_SNAPSHOT, { ...validSnapshot(1), seq: 3 });
+    await snapP;
+    guest2.disconnect();
+    host.disconnect();
   }));
 
   test('duplicate tab: newest connection takes the seat, old one gets an explicit error', M(async (port) => {
@@ -655,9 +871,9 @@ async function main() {
   test('input frames flow again while paused (relay states include paused)', M(async (port) => {
     const { host, guest } = await seatRoom(port);
     await bothReady({ host, guest });
-    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: true });
+    host.emit(EVENTS.GAME_STATUS, { phase: 'level', paused: true, r: 0 });
     await waitState(guest, (s) => s.state === ROOM_STATES.PAUSED);
-    guest.emit(EVENTS.INPUT_FRAME, { up: false, left: true, right: false, seq: 9 });
+    guest.emit(EVENTS.INPUT_FRAME, { up: false, left: true, right: false, seq: 9, r: 0 });
     const frame = await waitEvent(host, EVENTS.INPUT_FRAME);
     assert.equal(frame.left, true);
     host.disconnect();

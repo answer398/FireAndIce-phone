@@ -58,7 +58,14 @@ export class SnapshotSender {
     if (!this.timer) return;
     clearInterval(this.timer);
     this.timer = null;
-    this.seq = 0;
+    // seq stays MONOTONIC across peer sessions: the guest dedupes by seq and
+    // a reset would make it drop every snapshot until the old counter is
+    // exceeded again.
+    this.lastHash = null;
+  }
+
+  /** Next tick sends a full payload even if the world hash is unchanged. */
+  forceFull() {
     this.lastHash = null;
   }
 
@@ -79,12 +86,15 @@ export class SnapshotSender {
     // Menu phases: no world to send (the guest follows via game:status).
     if (!state) return;
 
-    const hash = JSON.stringify(state);
+    // Round identity: the server drops snapshots from an older round, so a
+    // restart/level switch can never be polluted by in-flight packets.
+    const roundId = this.session.round?.id ?? 0;
+    const hash = `${roundId}|${JSON.stringify(state)}`;
     const unchanged = hash === this.lastHash && this.lastHash !== null;
     this.seq += 1;
     const payload = unchanged
-      ? { seq: this.seq, ack: this.getAck(), same: true }
-      : { seq: this.seq, ack: this.getAck(), snap: state };
+      ? { seq: this.seq, ack: this.getAck(), r: roundId, same: true }
+      : { seq: this.seq, ack: this.getAck(), r: roundId, snap: state };
     this.lastHash = hash;
 
     this.net.emit(this.P.EVENTS.SYNC_SNAPSHOT, payload);
@@ -92,6 +102,7 @@ export class SnapshotSender {
     this.bus.emit('sync:stats', {
       seq: this.seq,
       ack: payload.ack,
+      r: roundId,
       same: unchanged || undefined,
       bytes: unchanged ? 0 : hash.length,
       hz: this.hz,
@@ -115,6 +126,9 @@ export class GuestSnapshotApplier {
     this.entering = false;
     this.lastEnterAt = 0;
     this.lastRecoverAt = 0;
+    /** Level the host was last seen in (full snapshots only) — a static world
+     * only produces `same` heartbeats (no lvl), so follow retries need this. */
+    this.lastSeenHostLevel = null;
 
     // Correction totals for the HUD + the per-frame delta carried on input frames.
     this.correctionsTotal = 0;
@@ -122,6 +136,17 @@ export class GuestSnapshotApplier {
     this.correctionsHard = 0;
     this.correctionsDiscrete = 0;
     this.#correctionsSinceFrame = 0;
+
+    // A fresh seat binding (join, rejoin after a network blip, page reload)
+    // must not keep the old seq filter: the host's counter may legitimately
+    // continue from where this page last saw it, or start over after a
+    // reload. Reset so the very next snapshot is applied.
+    bus.on('session:joined', ({ role }) => {
+      if (role === P.ROLES.GUEST) {
+        this.lastSeq = -1;
+        this.lastHash = null;
+      }
+    });
 
     net.on(P.EVENTS.SYNC_SNAPSHOT, (payload) => this.#onSnapshot(payload));
   }
@@ -144,6 +169,13 @@ export class GuestSnapshotApplier {
       this.droppedCount = (this.droppedCount ?? 0) + 1; // stale / duplicate
       return;
     }
+    // Round isolation, client-side echo of the server gate: never let a
+    // packet from an abandoned round touch the current level.
+    const roundId = this.session.round?.id ?? 0;
+    if (Number.isInteger(payload.r) && payload.r < roundId) {
+      this.droppedCount = (this.droppedCount ?? 0) + 1; // old round
+      return;
+    }
     this.lastSeq = payload.seq;
     this.lastAck = typeof payload.ack === 'number' ? payload.ack : this.lastAck;
     this.lastAgeMs = typeof payload.st === 'number' ? Date.now() - payload.st : null;
@@ -151,6 +183,9 @@ export class GuestSnapshotApplier {
 
     if (payload.same) {
       // Liveness marker: the guest's local sim stands; nothing to correct.
+      // A static world sends NO level descriptor — keep pursuing the level
+      // the host was last seen in (a failed/rejected navigation must retry).
+      this.#followIfBehind();
       this.#emitStats();
       return;
     }
@@ -159,6 +194,7 @@ export class GuestSnapshotApplier {
 
     // ---- level following ------------------------------------------------------
     const hostLevel = snap.lvl;
+    if (hostLevel) this.lastSeenHostLevel = hostLevel;
     const myLevel = this.adapter.getLevel();
     if (hostLevel && (!myLevel || myLevel.id !== hostLevel.id)) {
       this.#enterHostLevel(hostLevel);
@@ -192,6 +228,17 @@ export class GuestSnapshotApplier {
     this.#emitStats();
   }
 
+  /** On `same` heartbeats: if we know the host's level and we are not in it,
+   * keep trying to follow (paced by #enterHostLevel's debounce). */
+  #followIfBehind() {
+    if (!this.lastSeenHostLevel) return;
+    const myLevel = this.adapter.getLevel();
+    if (myLevel && myLevel.id === this.lastSeenHostLevel.id && myLevel.temple === this.lastSeenHostLevel.temple) {
+      return;
+    }
+    this.#enterHostLevel(this.lastSeenHostLevel);
+  }
+
   #enterHostLevel(hostLevel) {
     if (this.entering) return;
     if (Date.now() - this.lastEnterAt < ENTER_RETRY_MS) return;
@@ -202,7 +249,7 @@ export class GuestSnapshotApplier {
       .then((started) => {
         if (started) logger.info('guest following host into level', hostLevel.id);
       })
-      .catch((err) => logger.warn('startLevel failed', err?.message ?? err))
+      .catch((err) => logger.warn('startLevel failed', err?.message ?? err, err?.stack?.split('\n')[1] ?? ''))
       .finally(() => {
         this.entering = false;
       });

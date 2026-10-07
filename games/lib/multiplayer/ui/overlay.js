@@ -39,6 +39,7 @@ export class Overlay {
     this.#buildCountdown();
     this.#buildVideo();
     this.#buildBanner();
+    this.#buildMask();
 
     bus.on('session:joined', () => this.#renderSession());
     bus.on('session:left', () => this.#renderSession());
@@ -155,6 +156,34 @@ export class Overlay {
     this.root.appendChild(banner);
     this.bannerEl = banner;
     this.bannerTimer = null;
+  }
+
+  #buildMask() {
+    const mask = document.createElement('div');
+    mask.id = 'mp-mask';
+    mask.innerHTML = `
+      <div class="mp-mask-box">
+        <div class="mp-mask-spinner"></div>
+        <div class="mp-mask-text" id="mp-mask-text"></div>
+      </div>`;
+    mask.style.display = 'none';
+    this.root.appendChild(mask);
+    this.maskEl = mask;
+    this.maskTextEl = mask.querySelector('#mp-mask-text');
+  }
+
+  /**
+   * Full-screen reconnect mask: covers the canvas so neither player keeps
+   * "playing" against a frozen/desynced game while a seat is recovering.
+   * `text` may contain \n for line breaks. Idempotent.
+   */
+  showMask(text = '等待重连…') {
+    this.maskTextEl.textContent = text;
+    this.maskEl.style.display = 'flex';
+  }
+
+  hideMask() {
+    this.maskEl.style.display = 'none';
   }
 
   // ---- state rendering -----------------------------------------------------

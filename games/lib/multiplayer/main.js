@@ -22,6 +22,7 @@ import { LocalPads } from './input/localPads.js';
 import { VideoChannel, hookGameAudioOnce } from './net/videoChannel.js';
 import { StatusSync, GuestStatusTracker } from './sync/statusSync.js';
 import { SnapshotSender, GuestSnapshotApplier } from './sync/snapshotSync.js';
+import { HostRoundReporter, GuestRoundFollower } from './sync/roundSync.js';
 import { Overlay } from './ui/overlay.js';
 import { DebugHud } from './ui/hud.js';
 
@@ -73,7 +74,13 @@ export function bootstrap(P) {
   });
   const snapshotApplier = new GuestSnapshotApplier({ bus, net, session, adapter, P });
 
-  // 3c. Developer diagnostics (?mpDebug=1). Production pages never mount it.
+  // 3c. Game-lifecycle rounds (see sync/roundSync.js): the host reports what
+  // its game really does (enter/restart/leave/end); the guest only follows
+  // the server's round:update — no device switches a level on its own.
+  const roundReporter = new HostRoundReporter({ bus, net, session, adapter, P });
+  const roundFollower = new GuestRoundFollower({ bus, net, session, adapter, P });
+
+  // 3d. Developer diagnostics (?mpDebug=1). Production pages never mount it.
   const debugHud = new DebugHud({ bus, net, session, adapter, P, visible: urlFlags.debug });
 
   // 4. UI
@@ -162,6 +169,12 @@ export function bootstrap(P) {
 
   let prevRoomState = null;
 
+  // Auto-pause bookkeeping (room policy: pauseOnDisconnect). Whoever paused
+  // BECAUSE the peer dropped resumes automatically once the peer is back and
+  // a fresh authoritative snapshot has crossed the wire.
+  let hostAutoPaused = false;
+  let guestAutoPaused = false;
+
   bus.on('room:state', (state) => {
     overlay.setRoomState(state);
     // Role swaps reassign characters: rebind this device's seat (keyboard
@@ -183,20 +196,75 @@ export function bootstrap(P) {
     } else {
       overlay.hideCountdown();
     }
-    if (state.state === P.ROOM_STATES.RECONNECTING) {
-      const peerRole = session.role === P.ROLES.HOST ? P.ROLES.GUEST : P.ROLES.HOST;
-      if (state.players?.[peerRole] && !state.players[peerRole].connected) {
-        overlay.banner('对方正在重连…（席位将保留一段时间）');
+    const peerRole = session.role === P.ROLES.HOST ? P.ROLES.GUEST : P.ROLES.HOST;
+    const peerDisconnected = Boolean(state.players?.[peerRole] && !state.players[peerRole].connected);
+    if (state.state === P.ROOM_STATES.RECONNECTING && peerDisconnected) {
+      overlay.banner('对方正在重连…（席位将保留一段时间）');
+      // Room policy pauseOnDisconnect: freeze the game, release every key the
+      // dropped player holds and cover the play area until they are back.
+      // A short hide (lock screen, app switch) does NOT hit this path — the
+      // seat is only "disconnected" once the socket really died.
+      if (session.isHost) {
+        if (adapter.getPhase() === P.GAME_PHASES.LEVEL && adapter.pause()) hostAutoPaused = true;
+        remoteApplier.releaseAll();
+      } else {
+        if (adapter.getPhase() === P.GAME_PHASES.LEVEL && adapter.pause()) guestAutoPaused = true;
       }
-    } else if (state.state === P.ROOM_STATES.PLAYING && prevRoomState === P.ROOM_STATES.RECONNECTING) {
-      overlay.banner('对方已重连，继续游戏', 2500);
+      overlay.showMask(session.isHost ? '队友断线，游戏已暂停\n等待重连…' : '连接已断开，等待房主恢复…');
+    } else if (
+      (state.state === P.ROOM_STATES.PLAYING || state.state === P.ROOM_STATES.PAUSED) &&
+      prevRoomState === P.ROOM_STATES.RECONNECTING
+    ) {
+      overlay.hideMask();
+      if (session.isHost) {
+        if (!peerDisconnected) {
+          overlay.banner('对方已重连，继续游戏', 2500);
+          // The returning guest missed every snapshot since its drop: push a
+          // full authoritative state, THEN lift the policy pause.
+          snapshotSender.forceFull();
+          if (hostAutoPaused) {
+            hostAutoPaused = false;
+            setTimeout(() => {
+              if (session.peer.connected && adapter.getPhase() === P.GAME_PHASES.LEVEL) {
+                adapter.resume();
+              }
+            }, 900);
+          }
+        }
+      } else if (!peerDisconnected && guestAutoPaused && state.state === P.ROOM_STATES.PLAYING) {
+        // Guest resume rides on the host's pause parity (host resumes after
+        // its full snapshot — status paused=false un-pauses us here).
+        guestAutoPaused = false;
+        setTimeout(() => {
+          if (session.peer.connected && adapter.getPhase() === P.GAME_PHASES.LEVEL) {
+            adapter.resume();
+          }
+        }, 1200);
+      }
     }
     if (state.state === P.ROOM_STATES.FINISHED) {
+      overlay.hideMask();
       overlay.banner('本关结束！双方准备后自动开始下一局', 4000);
       if (!document.hidden) overlay.togglePanel(true);
     }
+    if (state.state === P.ROOM_STATES.WAITING) overlay.hideMask();
     prevRoomState = state.state;
     updateGuestPads();
+  });
+
+  // Round visibility for the players (the actual navigation is handled by
+  // GuestRoundFollower; this is just the human-readable echo).
+  const ROUND_REASON_TEXT = {
+    restart: '对方重开了本关',
+    enter: '对方进入了新的关卡',
+    leave: '对方返回了选关界面',
+    adopted: '关卡已同步',
+  };
+  bus.on('round:update', ({ round, reason }) => {
+    if (reason === 'restart' || reason === 'leave') {
+      overlay.banner(ROUND_REASON_TEXT[reason] ?? '关卡已同步', 3000);
+    }
+    logger.info('round now', round?.id, round?.phase);
   });
 
   bus.on('room:start', () => {
@@ -235,6 +303,9 @@ export function bootstrap(P) {
       adapter.setHostMode(true);
       remoteApplier.releaseAll();
       remoteApplier.lastSeq = -1;
+      // A (re)joining guest missed everything since its drop: make the very
+      // next tick send a full authoritative snapshot.
+      snapshotSender.forceFull();
       // (Re)start the video push for this guest (legacy relay, optional).
       const canvas = adapter.getCanvas();
       if (video && canvas) void video.hostStart(canvas);
@@ -258,6 +329,9 @@ export function bootstrap(P) {
     overlay.chip.removeAttribute('data-role');
     adapter.setHostMode(false);
     remoteApplier.releaseAll();
+    overlay.hideMask();
+    hostAutoPaused = false;
+    guestAutoPaused = false;
     if (video) video.stop();
     document.body.classList.remove('mp-guest-active');
     boundChar = null;
@@ -337,7 +411,11 @@ export function bootstrap(P) {
       guestPads = new LocalPads({ bus, char });
       bus.on('pads:frame', (frame) => {
         const corrections = snapshotApplier.takeCorrections();
-        net.emit(P.EVENTS.INPUT_FRAME, corrections > 0 ? { ...frame, c: corrections } : frame);
+        // Frames carry the round identity: the server drops anything from an
+        // older round so a restart can never be polluted by stale input.
+        const roundId = session.round?.id ?? 0;
+        const base = corrections > 0 ? { ...frame, c: corrections } : frame;
+        net.emit(P.EVENTS.INPUT_FRAME, roundId > 0 ? { ...base, r: roundId } : base);
       });
     } else {
       guestPads.destroy();
@@ -364,10 +442,11 @@ export function bootstrap(P) {
   });
 
   /** Guest pads accept input only when the SERVER says the game is live
-   * (playing/paused/reconnecting) AND the host is inside a level. */
+   * (playing/paused), the host is inside a level, AND nobody is reconnecting
+   * — any disconnect releases every held key immediately. */
   function updateGuestPads() {
     if (!guestPads) return;
-    const live = roomStateIs(...PLAY_STATES);
+    const live = roomStateIs(P.ROOM_STATES.PLAYING, P.ROOM_STATES.PAUSED);
     const inLevel = Boolean(lastHostStatus && lastHostStatus.phase === 'level');
     guestPads.setEnabled(live && inLevel);
   }
@@ -386,6 +465,48 @@ export function bootstrap(P) {
     if (state === ConnectionState.CONNECTED && session.token) {
       session.rejoin(session.token);
     }
+    // Our OWN transport died mid-game (lock screen, Wi-Fi↔cellular): cover
+    // the play area until the rejoin has restored the seat. The server keeps
+    // the seat for the grace window — a short hide never reaches this path.
+    if (state === ConnectionState.DISCONNECTED && session.code && roomStateIs(...PLAY_STATES)) {
+      overlay.showMask('连接中断，正在重连…\n（席位将保留一段时间）');
+    }
+    if (state === ConnectionState.CONNECTED) {
+      overlay.hideMask();
+    }
+  });
+
+  // ---- page lifecycle (lock screen / background / network switches) ---------
+  //
+  // Browsers stop rAF and (eventually) kill sockets for hidden pages — the
+  // SERVER's seat grace window is the recovery mechanism, not this page. We
+  // only release keys (the unified InputManager already does that on
+  // hidden/pagehide), surface state and poke the reconnect when we can.
+  // A normal short hide never leaves the room or destroys anything.
+
+  const pokeReconnect = (why) => {
+    if (!session.code) return;
+    if (net.connected) return;
+    logger.info('page lifecycle: poking reconnect', why);
+    net.poke();
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      pokeReconnect('visible');
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    // Keys are released by the InputManager's own pagehide handler; nothing
+    // else to do — sessionStorage keeps the seat for the automatic rejoin.
+  });
+  window.addEventListener('pageshow', (event) => {
+    // BFCache restore: the socket is almost certainly dead by now.
+    if (event.persisted) pokeReconnect('pageshow(bfcache)');
+  });
+  window.addEventListener('online', () => pokeReconnect('online'));
+  window.addEventListener('offline', () => {
+    if (session.code) overlay.banner('网络已断开，席位将保留，等待恢复…', 4000);
   });
 
   // ---- auto-join / restore ------------------------------------------------------
@@ -449,7 +570,7 @@ export function bootstrap(P) {
   // production code paths (adapter/session) without touching game files.
   // Never present on normal pages.
   if (urlFlags.debug) {
-    window.__mpDebug = { adapter, session, net, snapshotSender, snapshotApplier };
+    window.__mpDebug = { adapter, session, net, snapshotSender, snapshotApplier, roundReporter, roundFollower };
   }
 
   // Lightweight introspection for support/diagnostics (`?mpDebug=1`).
@@ -462,6 +583,8 @@ export function bootstrap(P) {
     char: session.char,
     roomState: session.state,
     peer: session.peer,
+    round: session.round,
+    sessionId: session.sessionId,
     phase: adapter.getPhase(),
     paused: adapter.isPaused(),
     level: adapter.getLevel(),

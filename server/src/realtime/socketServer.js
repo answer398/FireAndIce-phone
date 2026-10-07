@@ -6,6 +6,7 @@ import {
   ROOM_ERRORS,
   ROOM_STATES,
   SWAP_ACTIONS,
+  ROUND_EVENT_TYPES,
   PLAY_RELAY_STATES,
   CHARS,
   VALIDATE,
@@ -56,6 +57,20 @@ export function createSocketServer(httpServer, {
   };
 
   roomManager.onRoomChange = (room) => broadcastState(room);
+
+  /** Broadcast the room's current round to both seats (round mutation). */
+  const broadcastRoundUpdate = (room, reason) => {
+    const payload = {
+      code: room.code,
+      sid: room.sessionId,
+      round: room.roundView(),
+      reason: reason ?? null,
+      serverNow: Date.now(),
+    };
+    for (const player of [room.players.host, room.players.guest]) {
+      memberSocket(player)?.emit(EVENTS.ROUND_UPDATE, payload);
+    }
+  };
 
   roomManager.onRoomStart = (room, startAt) => {
     const payload = { code: room.code, serverNow: Date.now(), startAt };
@@ -312,12 +327,24 @@ export function createSocketServer(httpServer, {
       seat.room.setLatency(seat.player, Math.round(payload.ms));
     });
 
+    // ---- game lifecycle rounds (host reports, server assigns) ---------------
+
+    socket.on(EVENTS.ROUND_EVENT, (payload) => {
+      if (!seat || seat.slot !== ROLES.HOST) return; // guests follow, never report
+      if (!PLAY_RELAY_STATES.has(seat.room.state)) return; // rounds belong to live sessions
+      if (VALIDATE.roundEvent(payload)) return;
+      const view = seat.room.hostRoundEvent(payload.type, payload);
+      if (view) broadcastRoundUpdate(seat.room, payload.type);
+    });
+
     // ---- gameplay relays (gated on the room state machine) -------------------
 
     socket.on(EVENTS.INPUT_FRAME, (payload) => {
       if (!seat || seat.slot !== ROLES.GUEST) return; // only the guest seat sends input
       if (!PLAY_RELAY_STATES.has(seat.room.state)) return; // nothing flows before the server starts the game
       if (VALIDATE.inputFrame(payload)) return;
+      // Old-round frames must never touch the new level's sim.
+      if (seat.room.acceptsRoundPayload(payload.r) !== 'current') return;
       memberSocket(seat.room.getPeer(seat.player))?.emit(EVENTS.INPUT_FRAME, payload);
     });
 
@@ -342,6 +369,14 @@ export function createSocketServer(httpServer, {
         log(`room ${seat.room.code}: rejected game:status (${invalid})`);
         return;
       }
+      // Round gate: a stale 'end' from an abandoned round must not finish the
+      // current one; a payload racing ahead of its round:event adopts a round.
+      const verdict = seat.room.acceptsRoundPayload(payload.r, payload.level);
+      if (verdict === 'stale') {
+        log(`room ${seat.room.code}: dropped stale game:status (r=${payload.r})`);
+        return;
+      }
+      if (verdict === 'adopted') broadcastRoundUpdate(seat.room, 'adopted');
       // The room machine consumes pause / finish facts from the same event.
       seat.room.setHostPaused(Boolean(payload.paused));
       if (payload.phase === 'end') seat.room.markLevelEnded();
@@ -360,6 +395,13 @@ export function createSocketServer(httpServer, {
         log(`room ${seat.room.code}: rejected sync:snapshot (${invalid})`);
         return;
       }
+      // Round gate: old-round snapshots are dropped, never relayed.
+      const verdict = seat.room.acceptsRoundPayload(payload.r, payload.snap?.lvl);
+      if (verdict === 'stale') {
+        log(`room ${seat.room.code}: dropped stale sync:snapshot (r=${payload.r})`);
+        return;
+      }
+      if (verdict === 'adopted') broadcastRoundUpdate(seat.room, 'adopted');
       memberSocket(seat.room.getPeer(seat.player))?.emit(EVENTS.SYNC_SNAPSHOT, { ...payload, st: Date.now() });
     });
 

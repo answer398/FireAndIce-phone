@@ -96,6 +96,7 @@ export class RoomManager {
     }
     const code = this.generateCode();
     const room = new Room(code, game, {
+      sessionId: `r-${crypto.randomBytes(6).toString('hex')}`,
       seatGraceMs: this.seatGraceMs,
       countdownMs: this.countdownMs,
       swapOfferTtlMs: this.swapOfferTtlMs,

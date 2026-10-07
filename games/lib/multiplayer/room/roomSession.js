@@ -17,10 +17,12 @@
  *   room:state        { ...server projection incl. players, swap, countdown }
  *   room:countdown    { serverNow, startAt, durationMs }
  *   room:start        { serverNow, startAt }
+ *   round:update      { round: {id, level, phase}, reason }  (game lifecycle)
  */
 import { logger } from '../core/logger.js';
 
 const SEAT_KEY = 'mp:seat';
+const EMPTY_ROUND = Object.freeze({ id: 0, level: null, phase: 'idle' });
 
 /** UI-facing messages per protocol error code (server message is fallback). */
 export const ERROR_TEXT = {
@@ -52,6 +54,10 @@ export class RoomSession {
     this.game = null;
     this.token = null;
     this.state = null; // latest room:state projection
+    /** Server-assigned session id (stable for the room's life). */
+    this.sessionId = null;
+    /** Current game round {id, level, phase} — server-owned, followed by all. */
+    this.round = { ...EMPTY_ROUND };
     /** Mirrored peer presence (derived from room:state, kept for consumers). */
     this.peer = { role: null, char: null, connected: false, seated: false };
     this.joining = false;
@@ -67,6 +73,7 @@ export class RoomSession {
       net.on(E.ROOM_JOINED, (payload) => this.#onSeated(payload)),
       net.on(E.ROOM_REJOINED, (payload) => this.#onSeated(payload)),
       net.on(E.ROOM_STATE, (payload) => this.#onRoomState(payload)),
+      net.on(E.ROUND_UPDATE, (payload) => this.#onRoundUpdate(payload)),
       net.on(E.ROOM_COUNTDOWN, (payload) => {
         this.#trackClock(payload);
         this.bus.emit('room:countdown', payload);
@@ -104,9 +111,17 @@ export class RoomSession {
     );
   }
 
-  /** Rebind this socket to a known seat (after reconnect or page reload). */
+  /**
+   * Rebind this socket to a known seat (after reconnect or page reload).
+   *
+   * NOTE: this MUST also run when `code` is still set — a mid-game network
+   * blip (Wi-Fi↔cellular, background kill) drops the transport WITHOUT
+   * clearing the session, and the only way back onto the seat is a rejoin.
+   * The server's duplicate-tab policy makes a rejoin from a socket that is
+   * somehow still live safe (newest connection wins).
+   */
   rejoin(token) {
-    if (!token || this.code || this.joining) return;
+    if (!token || this.joining) return;
     this.joining = true;
     this.net.emit(this.P.EVENTS.ROOM_REJOIN, { token, protocol: this.P.PROTOCOL_VERSION }, (ack) => {
       this.joining = false;
@@ -166,6 +181,8 @@ export class RoomSession {
     this.game = null;
     this.token = null;
     this.state = null;
+    this.sessionId = null;
+    this.round = { ...EMPTY_ROUND };
     this.peer = { role: null, char: null, connected: false, seated: false };
     this.#forgetToken();
     this.bus.emit('session:left', left);
@@ -194,6 +211,10 @@ export class RoomSession {
 
   #onRoomState(payload) {
     if (!this.code || payload.code !== this.code) return;
+    // Monotonic projection: an out-of-order room:state (e.g. a duplicate
+    // delivery after a reconnect) must not roll the room backwards.
+    const prevRev = this.state?.rev ?? 0;
+    if (typeof payload.rev === 'number' && payload.rev < prevRev) return;
     const prevPeer = this.peer;
     this.#applyState(payload);
     this.peer = this.#peerFromState() ?? { role: null, char: null, connected: false, seated: false };
@@ -208,9 +229,31 @@ export class RoomSession {
     this.bus.emit('room:state', payload);
   }
 
+  #onRoundUpdate(payload) {
+    if (!this.code || payload?.code !== this.code) return;
+    const round = payload.round && typeof payload.round === 'object' ? payload.round : { ...EMPTY_ROUND };
+    const id = Number.isInteger(round.id) ? round.id : 0;
+    if (id < this.round.id) return; // stale broadcast; never roll back
+    this.round = {
+      id,
+      level: round.level ?? null,
+      phase: round.phase ?? 'idle',
+    };
+    logger.info('round update', this.round, payload.reason ?? '');
+    this.bus.emit('round:update', { round: this.round, reason: payload.reason ?? null });
+  }
+
   #applyState(state) {
     this.state = state;
     this.#trackClock(state);
+    if (typeof state.sid === 'string') this.sessionId = state.sid;
+    // Round identity rides on room:state too; ROUND_UPDATE stays the primary
+    // notification channel (this is a resync for reload/rejoin paths).
+    if (state.round && typeof state.round === 'object' && Number.isInteger(state.round.id)) {
+      if (state.round.id >= this.round.id) {
+        this.round = { id: state.round.id, level: state.round.level ?? null, phase: state.round.phase ?? 'idle' };
+      }
+    }
     // Swaps reassign chars server-side; keep the session in sync.
     const mine = state.players?.[this.role];
     if (mine && mine.char !== this.char) {
@@ -251,6 +294,8 @@ export class RoomSession {
       this.game = null;
       this.token = null;
       this.state = null;
+      this.sessionId = null;
+      this.round = { ...EMPTY_ROUND };
       this.peer = { role: null, char: null, connected: false, seated: false };
       this.#forgetToken();
       this.bus.emit('session:left', { code: null, role: null, reason: 'duplicate-tab' });

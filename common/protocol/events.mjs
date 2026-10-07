@@ -12,7 +12,7 @@
  * Hardcoding event names anywhere else is a bug.
  */
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Socket.IO event names. */
 export const EVENTS = {
@@ -59,6 +59,21 @@ export const EVENTS = {
 
   // ---- game command requests (guest -> server -> host) ----
   GAME_COMMAND: 'game:command',
+
+  // ---- game lifecycle rounds (host -> server, server -> both) ----
+  /**
+   * {type, level?, result?} — the HOST reports a lifecycle transition it
+   * observed through the game adapter (entered a level, restarted the same
+   * level, left to the menu, finished win|dead). Guest seat is rejected;
+   * the server is the only roundId assigner.
+   */
+  ROUND_EVENT: 'round:event',
+  /**
+   * {code, sid, round, serverNow} — broadcast on every round mutation.
+   * `round` = {id, level, phase}. The ONLY way a device learns the current
+   * round; both ends follow it, neither may switch levels on its own.
+   */
+  ROUND_UPDATE: 'round:update',
 
   // ---- status broadcast (host -> server -> guest) ----
   GAME_STATUS: 'game:status',
@@ -202,6 +217,7 @@ export const ROOM_ERRORS = {
  * {
  *   seq: 12,              // monotonic snapshot counter (host)
  *   ack: 41,              // last guest input:frame seq the host processed
+ *   r: 3,                 // roundId this snapshot belongs to (stale = dropped)
  *   same: true?,          // skip-unchanged: everything below is omitted
  *   st: 1710000000000,    // server clock at relay (added by the server)
  *   snap: {
@@ -239,6 +255,8 @@ function snapshotValidator(payload) {
     if (!payload || typeof payload !== 'object') return 'snapshot must be an object';
     if (!isInt(payload.seq)) return 'bad seq';
     if (payload.ack !== -1 && !isInt(payload.ack)) return 'bad ack';
+    // Round identity: packets from an older round are dropped at relay.
+    if (!isInt(payload.r)) return 'bad r';
     if (payload.same) return null; // mini snapshot: no snap field
     const s = payload.snap;
     if (!s || typeof s !== 'object') return 'snap must be an object';
@@ -282,6 +300,8 @@ function snapshotValidator(payload) {
 function inputFrameValidator(frame) {
     if (!frame || typeof frame !== 'object') return 'frame must be an object';
     if (typeof frame.seq !== 'number' || frame.seq < 0) return 'bad seq';
+    // Round identity: frames from an older round never reach the host sim.
+    if (!isInt(frame.r)) return 'bad r';
     for (const key of Object.values(INPUT_ACTIONS)) {
       if (typeof frame[key] !== 'boolean') return `bad ${key}`;
     }
@@ -317,12 +337,54 @@ export const GAME_PHASES = {
 };
 
 /**
+ * Round lifecycle (EVENTS.ROUND_EVENT / EVENTS.ROUND_UPDATE).
+ *
+ * A round is ONE attempt at ONE level: entered → playing → (win|dead →
+ * ended) or left. roundId is a per-room monotonic counter owned by the
+ * SERVER; every gameplay payload (input frame, snapshot, status) carries it
+ * and packets from an older round are dropped so a restart/level switch can
+ * never be polluted by stale traffic.
+ *
+ *   idle ── enter ──▶ playing ── end(win|dead) ──▶ ended
+ *     ▲                  │  ──── restart (same level, new roundId) ──▶ playing(new id)
+ *     └──── leave ◀──────┘   (back to the level menu / end screen)
+ */
+export const ROUND_PHASES = {
+  /** No live round (before the first level entry, or after leaving). */
+  IDLE: 'idle',
+  /** Host is inside a level; snapshots flow for this roundId. */
+  PLAYING: 'playing',
+  /** Level finished (win or dead); a new enter/restart starts a new round. */
+  ENDED: 'ended',
+};
+
+/** EVENTS.ROUND_EVENT payload types (host seat only). */
+export const ROUND_EVENT_TYPES = {
+  /** Host entered a level (first entry or a different level). */
+  ENTER: 'enter',
+  /** Host restarted the SAME level (retry): always a fresh roundId. */
+  RESTART: 'restart',
+  /** Host left the level (level menu / quit). */
+  LEAVE: 'leave',
+  /** Level finished: result 'win' | 'dead'. */
+  END: 'end',
+};
+
+export const ROUND_RESULTS = {
+  WIN: 'win',
+  DEAD: 'dead',
+};
+
+/**
  * room:state payload shape (EVENTS.ROOM_STATE). Sent on every room mutation
  * to every connected member socket.
  *
  * {
  *   code: 'AB23', game: '1-forest-temple', state: ROOM_STATES.*,
+ *   sid: 'r-7f3a…',                 // session id: stable for the room's life
+ *   rev: 18,                        // monotonic room projection version
  *   hostChar: 'fb',                 // char of the HOST slot; guest = opposite
+ *   round: { id: 3, level: {temple,id,filename}, phase: 'playing'|'ended'|'idle' },
  *   serverNow: 1710000000000,       // server clock at send time
  *   players: {
  *     host:  { char, connected, loaded, ready, latencyMs } | null,
@@ -383,6 +445,9 @@ export const VALIDATE = {
   gameStatus(status) {
     if (!status || typeof status !== 'object') return 'status must be an object';
     if (!Object.values(GAME_PHASES).includes(status.phase)) return 'bad phase';
+    // Round identity: a stale 'end' from a previous round must not finish
+    // the current one.
+    if (!Number.isInteger(status.r) || status.r < 0) return 'bad r';
     if (status.paused !== undefined && typeof status.paused !== 'boolean') return 'bad paused';
     // Optional level descriptor: the guest enters the SAME level the host is in.
     if (status.level !== undefined) {
@@ -425,6 +490,28 @@ export const VALIDATE = {
   token(token) {
     if (typeof token !== 'string' || token.length < 16 || token.length > 128) return 'bad token';
     if (!/^[a-f0-9]+$/.test(token)) return 'bad token charset';
+    return null;
+  },
+
+  /** Level descriptor traveling in round payloads ({temple, id, filename}). */
+  levelDescriptor(level) {
+    if (!level || typeof level !== 'object') return 'level must be an object';
+    if (typeof level.temple !== 'string' || level.temple.length === 0 || level.temple.length > 60) return 'bad level.temple';
+    if (!Number.isInteger(level.id) || level.id < 0) return 'bad level.id';
+    if (typeof level.filename !== 'string' || level.filename.length > 120) return 'bad level.filename';
+    return null;
+  },
+
+  /** EVENTS.ROUND_EVENT payload ({type, level?, result?}). */
+  roundEvent(event) {
+    if (!event || typeof event !== 'object') return 'round event must be an object';
+    if (!Object.values(ROUND_EVENT_TYPES).includes(event.type)) return 'bad round event type';
+    if (event.type === ROUND_EVENT_TYPES.ENTER || event.type === ROUND_EVENT_TYPES.RESTART) {
+      return VALIDATE.levelDescriptor(event.level);
+    }
+    if (event.type === ROUND_EVENT_TYPES.END) {
+      if (!Object.values(ROUND_RESULTS).includes(event.result)) return 'bad round result';
+    }
     return null;
   },
 };

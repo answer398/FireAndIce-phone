@@ -45,8 +45,11 @@ export class StatusSync {
     // The level descriptor rides along so the guest can enter the SAME level
     // (snapshot applier also carries it; status arrives even before the host
     // is deep enough in the level to produce its first world snapshot).
+    // `r` pins the status to a round: the server drops stale-round statuses
+    // so an old 'end' can never finish a newer round.
     const level = this.adapter.getLevel?.() ?? undefined;
-    this.latest = { phase, paused, ...(level ? { level } : {}), ts: Date.now() };
+    const r = this.session.round?.id ?? 0;
+    this.latest = { phase, paused, r, ...(level ? { level } : {}), ts: Date.now() };
     const now = Date.now();
     if (!immediate && now - this.lastSentAt < 250) {
       if (!this.pendingSend) {

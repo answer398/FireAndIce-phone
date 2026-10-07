@@ -3,6 +3,8 @@ import {
   CHARS,
   ROOM_STATES,
   ROOM_CLOSE_REASONS,
+  ROUND_EVENT_TYPES,
+  ROUND_PHASES,
   LIMITS,
   oppositeChar,
 } from '../../../common/protocol/events.mjs';
@@ -11,6 +13,10 @@ let nextMemberId = 1;
 
 function isConnected(player) {
   return Boolean(player && player.connected);
+}
+
+function levelKey(level) {
+  return level ? `${level.temple}#${level.id}` : null;
 }
 
 /**
@@ -31,9 +37,11 @@ function isConnected(player) {
  * socket layer only broadcasts — it never decides state.
  */
 export class Room {
-  constructor(code, game, { seatGraceMs, countdownMs, swapOfferTtlMs, emptyTtlMs, log, onChange, onClose }) {
+  constructor(code, game, { sessionId, seatGraceMs, countdownMs, swapOfferTtlMs, emptyTtlMs, log, onChange, onClose }) {
     this.code = code;
     this.game = game;
+    /** Stable session identity for this room's whole life (survives reconnects). */
+    this.sessionId = sessionId;
     this.seatGraceMs = seatGraceMs;
     this.countdownMs = countdownMs;
     this.swapOfferTtlMs = swapOfferTtlMs;
@@ -61,6 +69,15 @@ export class Room {
     this.hostPaused = false;
     /** True once the host reported a finished level (resting in 'finished'). */
     this.levelEnded = false;
+
+    // ---- game lifecycle (round) state ---------------------------------------
+    /** Monotonic room projection version — clients drop out-of-order states. */
+    this.rev = 0;
+    /** Current round counter; round.id === roundSeq while a round is live. */
+    this.roundSeq = 0;
+    /** {id, level, phase} | null — see ROUND_PHASES. The ONLY source of the
+     * current game/level/round triple; both devices follow it. */
+    this.round = null;
 
     this.closed = false;
     this.closeReason = null;
@@ -250,6 +267,87 @@ export class Room {
     this.#notify();
   }
 
+  // ---- game lifecycle (round) ------------------------------------------------
+  //
+  // The host seat REPORTS lifecycle transitions it observed through the game
+  // adapter; the server owns the roundId counter. Guests never send round
+  // events and never switch levels on their own — they follow round:update.
+
+  /** Current round projection for broadcasts (round:update / room:state). */
+  roundView() {
+    return this.round
+      ? { id: this.round.id, level: this.round.level, phase: this.round.phase }
+      : { id: 0, level: null, phase: ROUND_PHASES.IDLE };
+  }
+
+  /**
+   * Apply a host-reported lifecycle transition. Returns the round view so
+   * the socket layer can broadcast round:update, or null when the event was
+   * a no-op (duplicate enter, event for an already-current round).
+   */
+  hostRoundEvent(type, { level, result } = {}) {
+    switch (type) {
+      case ROUND_EVENT_TYPES.ENTER: {
+        const key = levelKey(level);
+        // Fresh round when there is none, when the level changed (next level /
+        // switched level) or when the previous round already ended. Entering
+        // the same level while it is still live is a no-op.
+        if (this.round && this.round.phase === ROUND_PHASES.PLAYING && levelKey(this.round.level) === key) {
+          return null;
+        }
+        return this.#beginRound(level);
+      }
+      case ROUND_EVENT_TYPES.RESTART:
+        // A restart is ALWAYS a fresh round, even for the same level.
+        return this.#beginRound(level);
+      case ROUND_EVENT_TYPES.LEAVE:
+        if (!this.round || this.round.phase === ROUND_PHASES.IDLE) return null;
+        // Keep the roundId: packets from the abandoned round stay droppable.
+        this.round.phase = ROUND_PHASES.IDLE;
+        this.log(`room ${this.code}: round ${this.round.id} left (${levelKey(this.round.level)})`);
+        this.#notify();
+        return this.roundView();
+      case ROUND_EVENT_TYPES.END:
+        if (!this.round || this.round.phase !== ROUND_PHASES.PLAYING) return null;
+        this.round.phase = ROUND_PHASES.ENDED;
+        this.log(`room ${this.code}: round ${this.round.id} ended (${result})`);
+        this.#notify();
+        return this.roundView();
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Round adoption guard for relayed gameplay payloads: the host's snapshot/
+   * status races ahead of its round:event (defensive backstop). Returns
+   * 'stale' (drop the packet — it belongs to an abandoned round), 'current'
+   * (roundId matches) or 'adopted' (the payload implicitly opened a new
+   * round; caller should broadcast round:update).
+   */
+  acceptsRoundPayload(r, level) {
+    if (!Number.isInteger(r) || r < 0) return 'stale';
+    if (this.round && r < this.round.id) return 'stale'; // stale old-round packet
+    if (!this.round || r > this.round.id) {
+      // Implicit enter: the host is already sending traffic for a new round.
+      this.#beginRound(level ?? null, r);
+      return 'adopted';
+    }
+    return 'current'; // r === round.id
+  }
+
+  #beginRound(level, forceId = null) {
+    this.roundSeq = forceId ?? this.roundSeq + 1;
+    this.round = {
+      id: this.roundSeq,
+      level: level ?? null,
+      phase: ROUND_PHASES.PLAYING,
+    };
+    this.log(`room ${this.code}: round ${this.round.id} started (${levelKey(level)})`);
+    this.#notify();
+    return this.roundView();
+  }
+
   // ---- role swap -------------------------------------------------------------
 
   offerSwap(fromSlot) {
@@ -319,18 +417,35 @@ export class Room {
       this.log(`room ${this.code}: countdown aborted`);
     }
 
-    if (this.state === ROOM_STATES.PLAYING || this.state === ROOM_STATES.PAUSED || this.state === ROOM_STATES.RECONNECTING) {
+    if (
+      this.state === ROOM_STATES.PLAYING ||
+      this.state === ROOM_STATES.PAUSED ||
+      this.state === ROOM_STATES.RECONNECTING ||
+      this.state === ROOM_STATES.FINISHED
+    ) {
       const host = this.players.host;
       const guest = this.players.guest;
       if (host && guest) {
         if (isConnected(host) && isConnected(guest)) {
-          this.state = this.hostPaused ? ROOM_STATES.PAUSED : ROOM_STATES.PLAYING;
+          if (this.state === ROOM_STATES.RECONNECTING) {
+            // Recovering from a reconnect: a finished-but-not-re-readied level
+            // settles back into 'finished', otherwise normal play resumes.
+            this.state = this.levelEnded ? ROOM_STATES.FINISHED : this.hostPaused ? ROOM_STATES.PAUSED : ROOM_STATES.PLAYING;
+            this.#notify();
+            return;
+          }
+          if (this.state !== ROOM_STATES.FINISHED) {
+            this.state = this.hostPaused ? ROOM_STATES.PAUSED : ROOM_STATES.PLAYING;
+            this.#notify();
+            return;
+          }
+          // FINISHED with both seats connected: fall through to the resting
+          // resolution (re-ready → countdown).
+        } else {
+          this.state = ROOM_STATES.RECONNECTING;
           this.#notify();
           return;
         }
-        this.state = ROOM_STATES.RECONNECTING;
-        this.#notify();
-        return;
       }
       if (!host) {
         // Host seat released: the room is closing right now.
@@ -375,6 +490,7 @@ export class Room {
   }
 
   #notify() {
+    this.rev += 1;
     try {
       this.onChange(this);
     } catch (err) {
@@ -437,8 +553,14 @@ export class Room {
     return {
       code: this.code,
       game: this.game,
+      sid: this.sessionId,
+      rev: this.rev,
       state: this.state,
       hostChar: this.hostChar,
+      round: this.roundView(),
+      // Room policy: on any mid-game disconnect the game is paused until the
+      // dropped seat returns (or the grace expires). Clients enforce it.
+      policy: { pauseOnDisconnect: true },
       serverNow: Date.now(),
       players: {
         host: playerView(this.players.host),

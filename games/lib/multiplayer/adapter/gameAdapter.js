@@ -135,6 +135,8 @@ export class GameAdapter {
     this.canvas = null;
     this.phase = P.GAME_PHASES.BOOTING;
     this.paused = false;
+    /** How the LAST level ended ('win' | 'dead'), captured at shutdown. */
+    this.lastLevelEnd = null;
 
     /** @type {Map<string, string>} templeData.id -> data path (e.g. 'forest'). */
     this.templePaths = new Map();
@@ -150,7 +152,16 @@ export class GameAdapter {
     // RequireJS modules appear at unpredictable times — poll until hooked.
     this.hookTimer = setInterval(() => this.detect(), 500);
     setTimeout(() => clearInterval(this.hookTimer), 120_000);
+    /** Set when WE force a state.start('level') — the fade chain normally
+     * calls Level.start() (intro camera + physics unpause) and our direct
+     * path must do it from the create hook instead. */
+    this.#needsManualLevelStart = false;
+    /** In-flight startLevel promise — concurrent callers share it. */
+    this.#levelNavPromise = null;
   }
+
+  #needsManualLevelStart;
+  #levelNavPromise;
 
   #templeIndexPromise;
   #gemCache;
@@ -203,14 +214,39 @@ export class GameAdapter {
         this.#wrapMethod(Level.prototype, 'create', (instance) => {
           this.level = instance;
           this.#gemCache = null;
+          this.lastLevelEnd = null;
           if (instance?.game) this.#captureGame(instance.game);
           logger.info('level state created');
+          if (this.#needsManualLevelStart) {
+            // Our forced state.start bypassed the fade chain that normally
+            // invokes Level.start (intro camera + physics unpause schedule).
+            this.#needsManualLevelStart = false;
+            setTimeout(() => {
+              try { instance.start?.(); } catch (err) { logger.warn('manual Level.start failed', err?.message ?? err); }
+            }, 0);
+          }
+          // Lifecycle observers (roundSync): a NEW Level instance means the
+          // game (re-)entered a level — same id twice in a row is a restart.
+          this.bus.emit('adapter:level-created', {
+            level: this.getLevel(),
+            instance,
+          });
           this.#reportPhase(true);
         });
         this.#wrapMethod(Level.prototype, 'shutdown', () => {
+          // Capture how the level ended BEFORE dropping the instance: the
+          // end screen (win/dead) is reported through this fact.
+          if (this.level?.ended) {
+            const dead = Boolean(
+              this.level.pers1?.isDead || this.level.pers2?.isDead ||
+              this.level.pers1?.dead || this.level.pers2?.dead,
+            );
+            this.lastLevelEnd = dead ? 'dead' : 'win';
+          }
           this.level = null;
           this.#gemCache = null;
           logger.info('level state shut down');
+          this.bus.emit('adapter:level-destroyed', {});
           this.#reportPhase(true);
         });
       }
@@ -242,8 +278,49 @@ export class GameAdapter {
     this.game = game;
     logger.info('game instance captured');
     this.bus.emit('adapter:game', game);
+    // Resolve temple id -> data path so getLevel() can report the descriptor
+    // the guest needs (critical for game 5's nested temple paths).
+    void this.#ensureTempleIndex();
+    // Keep the simulation alive on throttled pages (see #watchLoop).
+    this.#watchLoop(game);
     // Poll the engine's state machine; cheap and completely non-invasive.
     this.#startPhasePolling();
+  }
+
+  /**
+   * Browsers stop requestAnimationFrame for occluded/hidden pages, which
+   * FREEZES the whole simulation (a covered host stops snapshotting; a
+   * backgrounded guest stops following). Phaser's RAF driver has an official
+   * setTimeout fallback — switch to it as soon as the loop clock stalls
+   * while the game is not paused. Timers on hidden pages run slower (throttled
+   * to ~1Hz) but the sim degrades to slow-motion instead of freezing.
+   *
+   * Liveness signal: game.time.time is refreshed on EVERY loop update
+   * (game.time.frames only ticks when the game enabled advancedTiming).
+   */
+  #watchLoop(game) {
+    if (this.loopWatch) return;
+    let last = -1;
+    this.loopWatch = setInterval(() => {
+      if (!this.game || this.game !== game) {
+        clearInterval(this.loopWatch);
+        this.loopWatch = null;
+        return;
+      }
+      const now = game.time?.time ?? 0;
+      if (now === last) {
+        try {
+          const raf = game.raf;
+          if (raf && typeof raf.stop === 'function' && typeof raf.start === 'function' && !raf.isSetTimeOut?.()) {
+            raf.forceSetTimeOut = true;
+            raf.stop();
+            raf.start();
+            logger.warn('rAF starved — game loop switched to setTimeout');
+          }
+        } catch { /* engine without raf hook */ }
+      }
+      last = now;
+    }, 2000);
   }
 
   #watchCanvas() {
@@ -349,11 +426,30 @@ export class GameAdapter {
    * click uses): fetch the temple data, assign it the way LevelMenu.init does
    * (`game.currentTemple = templeData`), then `menu.skipToLevel(levelDesc)`.
    * No-op when that level is already running.
+   *
+   * Reentrancy: the snapshot applier AND the round follower can request the
+   * same navigation within milliseconds of each other. Two overlapping
+   * fades would kill each other's tween (state change clears tweens) and
+   * wedge `state.fading` — so concurrent callers share one navigation.
    */
-  async startLevel({ temple, id }) {
+  startLevel({ temple, id }) {
+    if (this.#levelNavPromise) return this.#levelNavPromise;
+    this.#levelNavPromise = this.#doStartLevel({ temple, id }).finally(() => {
+      this.#levelNavPromise = null;
+    });
+    return this.#levelNavPromise;
+  }
+
+  async #doStartLevel({ temple, id }) {
     const req = window.require;
     if (!this.game || !req) throw new Error('adapter: game not captured');
     if (this.phase === 'level' && this.level?.levelData?.id === id) return false; // already there
+    // The game registers itself in Phaser.GAMES mid-construction — the state
+    // manager may not exist yet when the very first snapshot races the boot.
+    for (let i = 0; i < 50 && !this.game.state; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!this.game.state) throw new Error('adapter: game state manager not ready');
 
     let templeData;
     if (this.game.currentTemple?.id && this.templePaths.get(this.game.currentTemple.id) === temple) {
@@ -371,9 +467,58 @@ export class GameAdapter {
     this.game.stage.disableVisibilityChange = true;
     const menu = this.game.state.states['menu'];
     if (!menu || typeof menu.skipToLevel !== 'function') throw new Error('menu skipToLevel unavailable');
-    menu.skipToLevel(levelDesc);
+    // skipToLevel reads `this.game` — but the engine nulls a retired state's
+    // game reference once another state took over, and we call it cross-state.
+    // Bind the call to a shim whose game is OUR live instance.
+    this.#navigateToLevel(levelDesc, () => menu.skipToLevel.call({ game: this.game }, levelDesc));
     logger.info('startLevel', temple, id);
     return true;
+  }
+
+  /**
+   * Drive the state machine to the 'level' state and VERIFY it got there.
+   *
+   * The game's own fade (`state.fade`) is guarded by `state.fading` and
+   * completes through a tween + ad-callback chain; if that chain is ever
+   * interrupted (page hidden, tween killed) the flag stays true and every
+   * later fade silently no-ops, leaving a frozen loading overlay. Since the
+   * fade's only real action is `state.start('level', true, false, desc)`, we
+   * verify shortly after the request and, if the transition did not happen,
+   * clear the stuck flag/overlay and perform that same engine call directly.
+   */
+  #navigateToLevel(levelDesc, requestNavigation) {
+    const game = this.game;
+    const alreadyRegistered = Boolean(game.state?.states?.['level']);
+    if (alreadyRegistered) {
+      // Deterministic path: skip the cosmetic fade entirely and perform the
+      // exact engine call the fade completion makes. Level.start() is invoked
+      // from our create hook (see #needsManualLevelStart).
+      this.#clearStuckFade(game);
+      this.#needsManualLevelStart = true;
+      game.state.start('level', true, false, levelDesc);
+      return;
+    }
+    // First registration must go through the menu (it registers the class).
+    requestNavigation();
+    setTimeout(() => {
+      if (this.game === game && game.state?.current !== 'level') {
+        logger.warn('level fade did not complete — forcing state.start(level)');
+        this.#clearStuckFade(game);
+        this.#needsManualLevelStart = true;
+        game.state.start('level', true, false, levelDesc);
+      }
+    }, 2500);
+  }
+
+  /** Clear an interrupted fade: its flag blocks all future fades. */
+  #clearStuckFade(game) {
+    const sm = game.state;
+    if (sm?.fading) {
+      sm.fading = false;
+      try { sm.overlay?.kill?.(); } catch { /* overlay gone */ }
+      sm.overlay = null;
+      logger.warn('cleared stuck state fade');
+    }
   }
 
   /**
@@ -717,18 +862,74 @@ export class GameAdapter {
   restart() {
     const level = this.level;
     if (!level) return false;
+    const game = this.game;
     if (typeof level.retry === 'function') {
+      // A wedged fade flag would silently swallow the retry's state.fade.
+      this.#clearStuckFade(game);
       level.retry();
       logger.info('level restart via retry()');
+      this.#verifyLevelEntry(game, level.levelData);
       return true;
     }
     // Fallback: re-enter with the stored descriptor (same fade path).
-    if (level.levelData && this.game?.state?.states?.['menu']?.skipToLevel) {
-      this.game.state.states['menu'].skipToLevel(level.levelData);
+    if (level.levelData && game?.state?.states?.['menu']?.skipToLevel) {
+      game.state.states['menu'].skipToLevel(level.levelData);
       logger.info('level restart via skipToLevel');
+      this.#verifyLevelEntry(game, level.levelData);
       return true;
     }
     return false;
+  }
+
+  /**
+   * fade-based navigation self-heal (see #navigateToLevel): if the requested
+   * transition never landed, force it so a stuck fade can never wedge the
+   * multiplayer lifecycle.
+   */
+  #verifyLevelEntry(game, levelDesc) {
+    setTimeout(() => {
+      if (this.game === game && game.state?.current !== 'level') {
+        logger.warn('level transition did not complete — forcing state.start(level)');
+        this.#clearStuckFade(game);
+        this.#needsManualLevelStart = true;
+        game.state.start('level', true, false, levelDesc);
+      }
+    }, 2500);
+  }
+
+  /**
+   * Leave the level back to the temple hall (level menu). The game's own quit
+   * path fades to the 'levelMenu' state — but that state class is only
+   * registered once the player has actually visited the temple hall, and a
+   * remote-following guest may never have. Route through the menu's own
+   * startTemple (register + fade), which is where the game itself goes when
+   * entering the hall from the main menu.
+   */
+  exitLevel() {
+    const game = this.game;
+    if (!game || this.phase !== 'level') return false;
+    const menu = game.state?.states?.['menu'];
+    if (typeof menu?.startTemple === 'function') {
+      this.#clearStuckFade(game);
+      // startTemple also reads `this.game` — same cross-state shim as above.
+      menu.startTemple.call({ game }, game.currentTemple);
+      logger.info('level exit via menu.startTemple');
+      setTimeout(() => {
+        if (this.game === game && game.state?.current === 'level') {
+          logger.warn('level exit did not complete — forcing state.start(levelMenu)');
+          this.#clearStuckFade(game);
+          if (game.state.states['levelMenu']) game.state.start('levelMenu', true, false, game.currentTemple);
+        }
+      }, 2500);
+      return true;
+    }
+    if (typeof game.state?.fade !== 'function') return false;
+    // Stop the level music the way Level.quit does, then fade out.
+    try { game.level?.sounds?.levelMusic?.stop?.(); } catch { /* audio gone */ }
+    this.#clearStuckFade(game);
+    game.state.fade('levelMenu', true, false, game.currentTemple);
+    logger.info('level exit via state.fade(levelMenu)');
+    return true;
   }
 
   /** Mirror the host's pause state (idempotent; uses the engine's P key). */

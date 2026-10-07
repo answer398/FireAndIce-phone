@@ -116,6 +116,30 @@ body.mp-guest-active #mp-video { display: block; }
   box-sizing: border-box;
 }
 
+/* Full-screen reconnect mask (seat recovery): blocks the canvas so nobody
+ * keeps playing against a frozen game, and makes the wait state obvious. */
+#mp-mask {
+  position: fixed; inset: 0; z-index: 2147480004;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(8, 10, 14, 0.78);
+  user-select: none; -webkit-user-select: none; touch-action: none;
+}
+#mp-mask .mp-mask-box {
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 26px 34px; border-radius: 16px;
+  background: var(--mp-bg); border: 1px solid var(--mp-border);
+}
+#mp-mask .mp-mask-spinner {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 4px solid var(--mp-border); border-top-color: #33ccff;
+  animation: mp-mask-spin 0.9s linear infinite;
+}
+@keyframes mp-mask-spin { to { transform: rotate(360deg); } }
+#mp-mask .mp-mask-text {
+  font-size: 15px; font-weight: 600; color: #fff; text-align: center;
+  white-space: pre-line; line-height: 1.5;
+}
+
 @media (max-height: 460px) {
   #mp-chip { top: 4px; }
   #mp-panel { top: 36px; max-height: calc(100dvh - 50px); }

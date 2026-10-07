@@ -182,4 +182,18 @@ export class SocketClient {
   get connected() {
     return Boolean(this.socket?.connected);
   }
+
+  /**
+   * Poke the connection after a page-lifecycle event (tab visible again,
+   * `online` fired, bfcache restore). No-op while connected or connecting;
+   * otherwise starts connecting immediately instead of waiting out the
+   * backoff timer — mobile OSes silently kill sockets in the background.
+   */
+  poke() {
+    if (!this.socket) return;
+    if (this.socket.connected) return;
+    try {
+      this.socket.connect();
+    } catch { /* socket in a state that rejects connect() */ }
+  }
 }
