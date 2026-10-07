@@ -40,9 +40,16 @@ export const config = {
 export const urlFlags = (() => {
   const params = new URLSearchParams(location.search);
   const gameMatch = location.pathname.match(/^\/?games\/(\d-[a-z0-9-]+)\/?/);
+  // Diagnostics stay local-only, but the test harness uses the loopback IP
+  // rather than the localhost hostname. Keep all loopback spellings scoped
+  // to development so a public deployment can never expose the debug handle.
+  const localDebugHost = location.hostname === 'localhost' ||
+    location.hostname === '127.0.0.1' ||
+    location.hostname === '[::1]' ||
+    location.hostname === '::1';
   return {
     room: params.get('room'),
-    debug: params.get('mpDebug') === '1' && location.hostname === 'localhost',
+    debug: params.get('mpDebug') === '1' && localDebugHost,
     /** Game directory id when this page IS a game page (null in the lobby). */
     game: gameMatch ? gameMatch[1] : null,
     /** `?mp=off` hard-disables the layer (troubleshooting escape hatch). */
