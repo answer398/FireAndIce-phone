@@ -215,9 +215,15 @@ export class GameAdapter {
         return original.call(this, name, ...args);
       }
       if (name === 'level' && !stalePending) {
-        // This is the delayed callback from the fade we just bypassed.
+        // A delayed callback from the bypassed fade arrives while the forced
+        // level is already current (or queued). If the game is back at a menu,
+        // this is a legitimate later level request and must pass through.
+        if (sm.current === 'level' || sm._pendingState === 'level') {
+          restore();
+          return undefined;
+        }
         restore();
-        return undefined;
+        return original.call(this, name, ...args);
       }
       return original.call(this, name, ...args);
     };
