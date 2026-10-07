@@ -92,7 +92,15 @@ export class SocketClient {
     this.#setState(ConnectionState.CONNECTING);
     const socket = this.io({
       path: config.socketPath,
-      transports: ['websocket', 'polling'],
+      // iOS Safari and some carrier/proxy paths reject the initial WebSocket
+      // handshake while ordinary HTTPS polling still works. Establish the
+      // session over polling first, then let Socket.IO upgrade to WebSocket;
+      // tryAllTransports also keeps a failed upgrade from leaving the lobby
+      // stuck in CONNECTING.
+      transports: ['polling', 'websocket'],
+      tryAllTransports: true,
+      rememberUpgrade: false,
+      upgrade: true,
       reconnection: true,
       reconnectionDelay: 500,
       reconnectionDelayMax: 4000,

@@ -62,11 +62,20 @@ export class RoomSession {
     /** Mirrored peer presence (derived from room:state, kept for consumers). */
     this.peer = { role: null, char: null, connected: false, seated: false };
     this.joining = false;
+    /**
+     * A lobby tap can arrive while the first mobile transport is still
+     * connecting. Keep one explicit action and flush it when the socket is
+     * ready instead of dropping the user's request.
+     */
+    this.pendingAction = null;
     /** serverNow - clientNow at the last server timestamp we saw. */
     this.serverOffsetMs = 0;
 
     // Re-join with the stored token whenever the socket reconnects.
     this.bus.on('net:reconnected', () => this.rejoin(this.token));
+    this.bus.on('net:state', (state) => {
+      if (state === 'connected') this.#flushPendingAction();
+    });
 
     const E = P.EVENTS;
     this.unsubscribers = [
@@ -93,6 +102,7 @@ export class RoomSession {
   create({ game, char }) {
     if (this.joining || this.code) return;
     if (!this.net.connected) {
+      if (!this.pendingAction) this.pendingAction = { type: 'create', game, char };
       this.#emitError({ code: 'offline' });
       return false;
     }
@@ -101,27 +111,43 @@ export class RoomSession {
       this.joining = false;
       if (ack && ack.ok === false) this.#emitError({ code: ack.code });
     });
-    if (!sent) this.joining = false;
+    if (!sent) {
+      this.joining = false;
+      if (!this.pendingAction) this.pendingAction = { type: 'create', game, char };
+    }
     return sent;
   }
 
   join(code) {
     if (this.joining || this.code) return;
+    const normalizedCode = String(code ?? '').toUpperCase();
     if (!this.net.connected) {
+      if (!this.pendingAction) this.pendingAction = { type: 'join', code: normalizedCode };
       this.#emitError({ code: 'offline' });
       return false;
     }
     this.joining = true;
     const sent = this.net.emit(
       this.P.EVENTS.ROOM_JOIN,
-      { code: String(code ?? '').toUpperCase(), protocol: this.P.PROTOCOL_VERSION },
+      { code: normalizedCode, protocol: this.P.PROTOCOL_VERSION },
       (ack) => {
         this.joining = false;
         if (ack && ack.ok === false) this.#emitError({ code: ack.code });
       },
     );
-    if (!sent) this.joining = false;
+    if (!sent) {
+      this.joining = false;
+      if (!this.pendingAction) this.pendingAction = { type: 'join', code: normalizedCode };
+    }
     return sent;
+  }
+
+  #flushPendingAction() {
+    const action = this.pendingAction;
+    if (!action || this.joining || this.code || !this.net.connected) return;
+    this.pendingAction = null;
+    if (action.type === 'create') this.create(action);
+    else if (action.type === 'join') this.join(action.code);
   }
 
   /**
@@ -197,6 +223,7 @@ export class RoomSession {
     this.sessionId = null;
     this.round = { ...EMPTY_ROUND };
     this.peer = { role: null, char: null, connected: false, seated: false };
+    this.pendingAction = null;
     this.#forgetToken();
     this.bus.emit('session:left', left);
   }
