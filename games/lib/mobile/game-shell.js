@@ -5,6 +5,10 @@
   var BUILD = 'mobile-shell-2026-10-07';
   var root = document.documentElement;
   var body = document.body;
+  var viewportMeta = document.querySelector('meta[name="viewport"]');
+  if (viewportMeta) {
+    viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no');
+  }
   if (new URLSearchParams(location.search).has('room')) body.classList.add('fb-room');
 
   root.classList.add('fb-mobile-shell');
@@ -24,6 +28,7 @@
     '#fb-rotate.show { display:grid; } #fb-rotate span { display:block; margin:8px auto 0; color:#aab3c1; font-size:14px; font-weight:400; }',
     '#fb-shell-tools { position:fixed; z-index:2147483000; top:calc(8px + var(--fb-safe-top)); right:calc(8px + var(--fb-safe-right)); display:flex; gap:6px; }',
     '#fb-shell-tools button { min-width:40px; min-height:36px; padding:7px 10px; border:1px solid rgba(255,255,255,.18); border-radius:9px; background:rgba(0,0,0,.55); color:#fff; font:600 12px system-ui,sans-serif; }',
+    'body.fb-ios-browser #fb-fullscreen { font-size:11px; opacity:.82; }',
     '@media (orientation:landscape) { #fb-rotate.show { display:none; } }',
   ].join('');
   document.head.appendChild(style);
@@ -45,7 +50,22 @@
   addEventListener('orientationchange', updateOrientation, { passive: true });
   updateOrientation();
 
-  document.getElementById('fb-fullscreen').addEventListener('click', function () {
+  var fullscreenButton = document.getElementById('fb-fullscreen');
+  var canFullscreen = Boolean(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+  var isIosBrowser = /iPhone|iPad|iPod/i.test(navigator.userAgent) && !navigator.standalone;
+  if (isIosBrowser) {
+    body.classList.add('fb-ios-browser');
+    fullscreenButton.textContent = '加入主屏幕';
+    fullscreenButton.title = 'iPhone/iPad 请使用“加入主屏幕”获得无地址栏体验';
+  } else if (!canFullscreen) {
+    fullscreenButton.style.display = 'none';
+  }
+  fullscreenButton.addEventListener('click', function () {
+    if (isIosBrowser && !canFullscreen) {
+      fullscreenButton.textContent = '请从分享菜单加入主屏幕';
+      setTimeout(function () { fullscreenButton.textContent = '加入主屏幕'; }, 3000);
+      return;
+    }
     var el = document.documentElement;
     var request = el.requestFullscreen || el.webkitRequestFullscreen;
     if (!request) return;

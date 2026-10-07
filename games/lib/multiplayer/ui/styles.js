@@ -141,8 +141,32 @@ body.mp-guest-active #mp-video { display: block; }
 }
 
 @media (max-height: 460px) {
-  #mp-chip { top: 4px; }
-  #mp-panel { top: 36px; max-height: calc(100dvh - 50px); }
+  #mp-chip { top: calc(4px + env(safe-area-inset-top, 0px)); }
+  #mp-panel {
+    top: calc(4px + env(safe-area-inset-top, 0px));
+    bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+    max-height: none;
+    padding: 10px;
+    border-radius: 12px;
+  }
+  #mp-panel h3 { margin-bottom: 5px; font-size: 15px; }
+  #mp-panel .mp-row { gap: 5px; margin: 5px 0; }
+  #mp-panel .mp-btn { min-height: 36px; padding: 7px 6px; font-size: 13px; border-radius: 9px; }
+  #mp-panel .mp-choice { gap: 5px; margin-bottom: 4px; }
+  #mp-panel .mp-code { font-size: 28px; letter-spacing: 7px; padding: 0; }
+  .mp-codewrap { margin-bottom: 4px; }
+  .mp-slots { gap: 5px; margin: 4px 0; }
+  .mp-slot { padding: 5px 7px; font-size: 11px; line-height: 1.45; border-radius: 9px; }
+  .mp-slot-you { font-size: 10px; }
+  #mp-panel .mp-input { padding: 8px 6px; font-size: 16px; }
+  #mp-panel .mp-close { top: 3px; right: 5px; padding: 4px; }
+  #mp-panel .mp-hint { font-size: 11px; line-height: 1.35; }
   #mp-countdown { font-size: 64px; }
+}
+
+@media (max-width: 520px) and (orientation: landscape) {
+  #mp-panel { width: min(520px, calc(100vw - 12px)); }
+  #mp-panel .mp-actions { margin-top: 3px; }
+  #mp-panel #mp-invite-row { margin-top: 3px; }
 }
 `;
