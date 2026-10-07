@@ -8,6 +8,20 @@
 
 ![手机端联机游戏实测](docs/mobile-gameplay.jpg)
 
+完整联机流程截图：
+
+| 房主创建房间 | 第二台设备加入 |
+| --- | --- |
+| ![房主创建房间](docs/multiplayer-mobile-host-room.png) | ![第二台设备加入房间](docs/multiplayer-mobile-guest-joined.png) |
+
+进入游戏后，双方会分别显示自己的角色和触控区域：
+
+| 房主进入游戏 | 加入者进入游戏 |
+| --- | --- |
+| ![房主游戏画面](docs/multiplayer-mobile-host-game.png) | ![加入者游戏画面](docs/multiplayer-mobile-guest-game.png) |
+
+截图来自本地生产服务的真实浏览器联机流程，房间创建、加入、准备和进入游戏均为实际操作结果。
+
 > iPhone Safari 不支持普通网页强制全屏。游戏页会提供“加入主屏幕”提示；从主屏幕启动后可以获得没有 Safari 地址栏的沉浸式体验。iPad 通常支持网页全屏按钮。
 
 ## 项目来源
