@@ -2,7 +2,7 @@
  * Client-side configuration for the multiplayer extension layer.
  *
  * The layer lives next to the games (no build step), so configuration is a
- * plain module. Override via URL query (`?mpDebug=1`) for diagnostics.
+ * plain module. Diagnostics are enabled only in non-production builds.
  */
 
 export const config = {
@@ -42,7 +42,7 @@ export const urlFlags = (() => {
   const gameMatch = location.pathname.match(/^\/?games\/(\d-[a-z0-9-]+)\/?/);
   return {
     room: params.get('room'),
-    debug: params.get('mpDebug') === '1',
+    debug: params.get('mpDebug') === '1' && location.hostname === 'localhost',
     /** Game directory id when this page IS a game page (null in the lobby). */
     game: gameMatch ? gameMatch[1] : null,
     /** `?mp=off` hard-disables the layer (troubleshooting escape hatch). */

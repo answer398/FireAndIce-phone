@@ -1,0 +1,10 @@
+.git
+node_modules
+server/node_modules
+tests
+scripts
+tools
+README.original.md
+MULTIPLAYER.md
+*.log
+server/.env

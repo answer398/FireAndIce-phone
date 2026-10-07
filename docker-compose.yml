@@ -1,0 +1,18 @@
+services:
+  fireandice:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL}
+      TRUST_PROXY: "1"
+      ALLOWED_ORIGINS: ${PUBLIC_URL}
+      EMPTY_ROOM_TTL_MS: ${EMPTY_ROOM_TTL_MS:-600000}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

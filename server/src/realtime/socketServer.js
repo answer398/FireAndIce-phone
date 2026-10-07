@@ -31,7 +31,12 @@ export function createSocketServer(httpServer, {
 }) {
   const io = new Server(httpServer, {
     path: '/socket.io',
-    cors: { origin: allowedOrigins.length > 0 ? allowedOrigins : true },
+    cors: {
+      origin(origin, callback) {
+        if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(null, false);
+      },
+    },
     // Small payloads, interactive latency: websocket first, polling fallback
     // only for networks that break WS.
     transports: ['websocket', 'polling'],
@@ -43,6 +48,7 @@ export function createSocketServer(httpServer, {
   const rateCreate = new RateLimiter({ windowMs: 60_000, max: rateLimits.createMax ?? 6 });
   const rateJoin = new RateLimiter({ windowMs: 60_000, max: rateLimits.joinMax ?? 20 });
   const rateLatency = new RateLimiter({ windowMs: 60_000, max: rateLimits.latencyMax ?? 20 });
+  const rateMessages = new RateLimiter({ windowMs: 60_000, max: rateLimits.messageMax ?? 1200 });
 
   // ---- room event hooks (rooms exist only after createRoom) ----------------
 
@@ -89,6 +95,8 @@ export function createSocketServer(httpServer, {
   };
 
   io.on('connection', (socket) => {
+    const socketShortId = socket.id.slice(-8);
+    log(`connect ${socketShortId}`);
     /**
      * The seat bound to THIS connection: { room, player, slot, char }.
      * The slot/char always come from server-side assignment; nothing in any
@@ -115,6 +123,12 @@ export function createSocketServer(httpServer, {
       if (verdict.ok) return false;
       emitRoomError(ROOM_ERRORS.RATE_LIMITED, `too many requests, retry in ${Math.ceil(verdict.retryAfterMs / 1000)}s`);
       return true;
+    };
+    const messageAllowed = (payload) => {
+      try {
+        if (JSON.stringify(payload ?? null).length > 4096) return false;
+      } catch { return false; }
+      return !limited(rateMessages);
     };
 
     const versionMismatch = (payload) =>
@@ -166,7 +180,7 @@ export function createSocketServer(httpServer, {
         ack?.({ ok: false, code: ROOM_ERRORS.RATE_LIMITED });
         return;
       }
-      if (!payload || typeof payload !== 'object') {
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length > 3) {
         emitRoomError(ROOM_ERRORS.BAD_PAYLOAD, 'payload must be an object');
         ack?.({ ok: false, code: ROOM_ERRORS.BAD_PAYLOAD });
         return;
@@ -212,7 +226,12 @@ export function createSocketServer(httpServer, {
         ack?.({ ok: false, code: ROOM_ERRORS.RATE_LIMITED });
         return;
       }
-      const code = String(payload?.code ?? '').toUpperCase();
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || typeof payload.code !== 'string' || payload.code.length > 16) {
+        emitRoomError(ROOM_ERRORS.ROOM_NOT_FOUND, 'invalid room code');
+        ack?.({ ok: false, code: ROOM_ERRORS.ROOM_NOT_FOUND });
+        return;
+      }
+      const code = payload.code.toUpperCase();
       if (VALIDATE.roomCode(code)) {
         emitRoomError(ROOM_ERRORS.ROOM_NOT_FOUND, 'invalid room code');
         ack?.({ ok: false, code: ROOM_ERRORS.ROOM_NOT_FOUND });
@@ -261,7 +280,7 @@ export function createSocketServer(httpServer, {
           message: 'this seat was opened in a newer tab/connection',
         });
         displaced?.leave(`room:${room.code}`);
-        log(`room ${room.code}: duplicate tab displaced ${player.socketId}`);
+        log(`room ${room.code}: duplicate tab displaced ${String(player.socketId).slice(-8)}`);
       }
       bindSeat(result, EVENTS.ROOM_REJOINED);
       ack?.({ ok: true, code: room.code, game: result.game, role: result.slot, char: result.char });
@@ -278,23 +297,21 @@ export function createSocketServer(httpServer, {
     // ---- readiness gate ---------------------------------------------------
 
     socket.on(EVENTS.ROOM_LOAD, (payload = {}) => {
-      if (!ownsSeat() || !payload || typeof payload !== 'object') return;
+      if (!ownsSeat() || !messageAllowed(payload) || VALIDATE.loadPayload(payload)) return;
       const loaded = payload.loaded;
-      if (typeof loaded !== 'boolean') return;
       seat.room.setLoaded(seat.player, loaded);
     });
 
     socket.on(EVENTS.ROOM_READY, (payload = {}) => {
-      if (!ownsSeat() || !payload || typeof payload !== 'object') return;
+      if (!ownsSeat() || !messageAllowed(payload) || VALIDATE.readyPayload(payload)) return;
       const ready = payload.ready;
-      if (typeof ready !== 'boolean') return;
       seat.room.setReady(seat.player, ready);
     });
 
     // ---- role swap ---------------------------------------------------------
 
     socket.on(EVENTS.ROOM_SWAP, (payload = {}) => {
-      if (!ownsSeat() || !payload || typeof payload !== 'object') return;
+      if (!ownsSeat() || !messageAllowed(payload) || !payload || typeof payload !== 'object') return;
       if (VALIDATE.swapAction(payload.action)) return;
       const { room, slot } = seat;
       switch (payload.action) {
@@ -321,7 +338,7 @@ export function createSocketServer(httpServer, {
     });
 
     socket.on(EVENTS.NET_LATENCY, (payload = {}) => {
-      if (!ownsSeat()) return;
+      if (!ownsSeat() || !messageAllowed(payload)) return;
       if (VALIDATE.latencyMs(payload?.ms)) return;
       if (limited(rateLatency)) return;
       seat.room.setLatency(seat.player, Math.round(payload.ms));
@@ -330,7 +347,7 @@ export function createSocketServer(httpServer, {
     // ---- game lifecycle rounds (host reports, server assigns) ---------------
 
     socket.on(EVENTS.ROUND_EVENT, (payload) => {
-      if (!seat || seat.slot !== ROLES.HOST) return; // guests follow, never report
+      if (!seat || seat.slot !== ROLES.HOST || !messageAllowed(payload)) return; // guests follow, never report
       if (!PLAY_RELAY_STATES.has(seat.room.state)) return; // rounds belong to live sessions
       if (VALIDATE.roundEvent(payload)) return;
       const view = seat.room.hostRoundEvent(payload.type, payload);
@@ -340,7 +357,7 @@ export function createSocketServer(httpServer, {
     // ---- gameplay relays (gated on the room state machine) -------------------
 
     socket.on(EVENTS.INPUT_FRAME, (payload) => {
-      if (!seat || seat.slot !== ROLES.GUEST) return; // only the guest seat sends input
+      if (!seat || seat.slot !== ROLES.GUEST || !messageAllowed(payload)) return; // only the guest seat sends input
       if (!PLAY_RELAY_STATES.has(seat.room.state)) return; // nothing flows before the server starts the game
       if (VALIDATE.inputFrame(payload)) return;
       // Old-round frames must never touch the new level's sim.
@@ -349,21 +366,21 @@ export function createSocketServer(httpServer, {
     });
 
     socket.on(EVENTS.INPUT_POINTER, (payload) => {
-      if (!seat || seat.slot !== ROLES.GUEST) return;
+      if (!seat || seat.slot !== ROLES.GUEST || !messageAllowed(payload)) return;
       if (!PLAY_RELAY_STATES.has(seat.room.state)) return;
       if (VALIDATE.pointerEvent(payload)) return;
       memberSocket(seat.room.getPeer(seat.player))?.emit(EVENTS.INPUT_POINTER, payload);
     });
 
     socket.on(EVENTS.GAME_COMMAND, (payload) => {
-      if (!seat || seat.slot !== ROLES.GUEST) return;
+      if (!seat || seat.slot !== ROLES.GUEST || !messageAllowed(payload)) return;
       if (!PLAY_RELAY_STATES.has(seat.room.state)) return;
-      if (!payload || typeof payload !== 'object' || typeof payload.type !== 'string' || payload.type.length > 32) return;
+      if (VALIDATE.command(payload)) return;
       memberSocket(seat.room.getPeer(seat.player))?.emit(EVENTS.GAME_COMMAND, payload);
     });
 
     socket.on(EVENTS.GAME_STATUS, (payload) => {
-      if (!seat || seat.slot !== ROLES.HOST) return; // only the host seat reports status
+      if (!seat || seat.slot !== ROLES.HOST || !messageAllowed(payload)) return; // only the host seat reports status
       const invalid = VALIDATE.gameStatus(payload);
       if (invalid) {
         log(`room ${seat.room.code}: rejected game:status (${invalid})`);
@@ -388,7 +405,7 @@ export function createSocketServer(httpServer, {
     // clock so the guest can age-check each snapshot. Ordering/dedup is the
     // guest's job (seq filter) — the relay stays a dumb, verified pipe.
     socket.on(EVENTS.SYNC_SNAPSHOT, (payload) => {
-      if (!seat || seat.slot !== ROLES.HOST) return;
+      if (!seat || seat.slot !== ROLES.HOST || !messageAllowed(payload)) return;
       if (!PLAY_RELAY_STATES.has(seat.room.state)) return;
       const invalid = VALIDATE.snapshot(payload);
       if (invalid) {
@@ -406,14 +423,14 @@ export function createSocketServer(httpServer, {
     });
 
     socket.on(EVENTS.RTC_SIGNAL, (payload) => {
-      if (!seat) return;
-      if (!payload || typeof payload !== 'object' || typeof payload.kind !== 'string' || payload.kind.length > 32) return;
+      if (!seat || !messageAllowed(payload) || VALIDATE.signal(payload)) return;
       memberSocket(seat.room.getPeer(seat.player))?.emit(EVENTS.RTC_SIGNAL, payload);
     });
 
     // ---- teardown ---------------------------------------------------------
 
     socket.on('disconnect', () => {
+      log(`disconnect ${socketShortId}`);
       if (!ownsSeat()) return;
       const { room, player } = seat;
       seat = null;
@@ -433,6 +450,7 @@ export function createSocketServer(httpServer, {
     rateCreate.stop();
     rateJoin.stop();
     rateLatency.stop();
+    rateMessages.stop();
     io.close();
   };
 

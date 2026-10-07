@@ -1,11 +1,11 @@
 import http from 'node:http';
 import { createApp } from './app.js';
-import { config, isDev, localAddresses } from './config.js';
+import { config } from './config.js';
 import { RoomManager } from './rooms/roomManager.js';
 import { createSocketServer } from './realtime/socketServer.js';
 
 const log = (...args) => {
-  if (isDev || config.logLevel !== 'debug') console.log('[server]', ...args);
+  if (config.logLevel !== 'silent') console.log('[server]', ...args);
 };
 
 const app = createApp();
@@ -30,6 +30,7 @@ const realtime = createSocketServer(httpServer, {
   rateLimits: {
     createMax: config.rateCreatePerMin,
     joinMax: config.rateJoinPerMin,
+    messageMax: config.rateMessagePerMin,
   },
 });
 
@@ -38,19 +39,15 @@ if (config.trustProxy) {
 }
 
 httpServer.listen(config.port, config.host, () => {
-  const base = (host) => `http://${host}:${config.port}`;
   console.log(`[server] ${config.env} mode, listening on ${config.host}:${config.port}`);
-  console.log(`[server]   local:    ${base('127.0.0.1')}`);
-  for (const addr of localAddresses()) {
-    console.log(`[server]   network:  ${base(addr)}`);
-  }
+  if (config.publicUrl) console.log(`[server] public URL: ${config.publicUrl}`);
   console.log('[server] games:', roomManager.gameIds.join(', ') || '(none found)');
   console.log('[server] rooms:', roomManager.stats().rooms);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
-    console.log(`\n[server] ${signal} received, shutting down`);
+    console.log(`[server] ${signal} received, shutting down`);
     realtime.stop();
     roomManager.stop();
     httpServer.close(() => process.exit(0));

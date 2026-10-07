@@ -60,9 +60,30 @@ export function createApp() {
   const app = express();
   app.disable('x-powered-by');
 
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+    res.setHeader('Content-Security-Policy', [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "frame-ancestors 'self'",
+      "script-src 'self' 'unsafe-inline' blob:",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "font-src 'self' data:",
+      "media-src 'self' data: blob:",
+      "worker-src 'self' blob:",
+      "connect-src 'self' ws: wss:",
+    ].join('; '));
+    next();
+  });
+
   // Health probe for reverse proxies / uptime checks.
   app.get('/healthz', (req, res) => {
-    res.type('text/plain').send('ok');
+    res.status(200).json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()) });
   });
 
   // Shared-asset rewrite: /games/<name>/assets/<p> that lives in the SW's
@@ -74,7 +95,7 @@ export function createApp() {
     const shared = SHARED_ALL.all.has(assetPath) || (SHARED_ALL.g1234.has(assetPath) && GAMES_1234_DIRS.has(gameDir));
     if (!shared) return next();
     const filePath = path.join(sharedAssetsDir, assetPath);
-    if (!filePath.startsWith(sharedAssetsDir)) return next();
+    if (path.relative(sharedAssetsDir, filePath).startsWith('..')) return next();
     res.sendFile(filePath, (err) => {
       if (err) {
         // Fall through to the normal static handling (404 with a clear log).
@@ -116,6 +137,12 @@ export function createApp() {
       },
     }),
   );
+
+  app.use((req, res) => res.status(404).type('html').send('<!doctype html><title>Not found</title><h1>Page not found</h1><p>The requested resource is unavailable.</p>'));
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    res.status(500).type('html').send('<!doctype html><title>Server error</title><h1>Service temporarily unavailable</h1><p>Please retry shortly.</p>');
+  });
 
   return app;
 }

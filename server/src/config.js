@@ -22,6 +22,7 @@ export const config = {
   env: process.env.NODE_ENV ?? 'production',
   host: process.env.HOST ?? '0.0.0.0',
   port: intEnv('PORT', 8080),
+  publicUrl: process.env.PUBLIC_URL ?? '',
   /** Origins allowed to open the socket. Empty array = same-origin only. */
   allowedOrigins: listEnv('ALLOWED_ORIGINS', []),
   /** How long a disconnected SEAT is held before the slot is truly released. */
@@ -41,6 +42,7 @@ export const config = {
   /** Rate limits, per client IP: room creations and join/rejoin per minute. */
   rateCreatePerMin: intEnv('RATE_CREATE_PER_MIN', 6),
   rateJoinPerMin: intEnv('RATE_JOIN_PER_MIN', 20),
+  rateMessagePerMin: intEnv('RATE_MESSAGE_PER_MIN', 1200),
   /** Behind a reverse proxy (nginx/Caddy) that sets X-Forwarded-*. */
   trustProxy: process.env.TRUST_PROXY === '1',
   logLevel: process.env.LOG_LEVEL ?? 'info',

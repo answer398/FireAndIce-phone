@@ -264,7 +264,7 @@ function snapshotValidator(payload) {
     if (s.lvl) {
       if (typeof s.lvl.temple !== 'string' || s.lvl.temple.length > 60) return 'bad lvl.temple';
       if (!isInt(s.lvl.id)) return 'bad lvl.id';
-      if (typeof s.lvl.filename !== 'string' || s.lvl.filename.length > 120) return 'bad lvl.filename';
+      if (typeof s.lvl.filename !== 'string' || s.lvl.filename.length > 120 || s.lvl.filename.startsWith('/') || s.lvl.filename.includes('..') || !/^[a-zA-Z0-9_./-]+$/.test(s.lvl.filename)) return 'bad lvl.filename';
     }
     if (!Array.isArray(s.ch) || s.ch.length !== 2 || !s.ch.every(validChar)) return 'bad ch';
     if (!Array.isArray(s.di) || s.di.length > 64) return 'bad di';
@@ -414,6 +414,9 @@ export const LIMITS = {
   /** Maximum simultaneously existing rooms. */
   MAX_ROOMS: 200,
   INPUT_FRAME_MAX_BYTES: 256,
+  EVENT_MAX_BYTES: 4096,
+  COMMAND_TYPE_MAX_LENGTH: 32,
+  SIGNAL_MAX_BYTES: 2048,
 };
 
 /**
@@ -439,6 +442,41 @@ export const VALIDATE = {
     if (!Object.values(POINTER_PHASES).includes(ev.phase)) return 'bad phase';
     if (typeof ev.nx !== 'number' || ev.nx < 0 || ev.nx > 1) return 'bad nx';
     if (typeof ev.ny !== 'number' || ev.ny < 0 || ev.ny > 1) return 'bad ny';
+    if (ev.r !== undefined && (!Number.isInteger(ev.r) || ev.r < 0)) return 'bad r';
+    return null;
+  },
+
+  loadPayload(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'payload must be an object';
+    return typeof payload.loaded === 'boolean' ? null : 'bad loaded';
+  },
+
+  readyPayload(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'payload must be an object';
+    return typeof payload.ready === 'boolean' ? null : 'bad ready';
+  },
+
+  command(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'command must be an object';
+    if (typeof payload.type !== 'string' || payload.type.length === 0 || payload.type.length > LIMITS.COMMAND_TYPE_MAX_LENGTH) return 'bad command type';
+    if (!/^[a-z][a-z0-9-]*$/.test(payload.type)) return 'bad command type';
+    const keys = Object.keys(payload);
+    if (keys.length > 2 || keys.some((key) => !['type', 'r'].includes(key))) return 'bad command fields';
+    if (payload.r !== undefined && (!Number.isInteger(payload.r) || payload.r < 0)) return 'bad command round';
+    return null;
+  },
+
+  signal(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'signal must be an object';
+    if (typeof payload.kind !== 'string' || !/^(offer|answer|ice)$/.test(payload.kind)) return 'bad signal kind';
+    if (Object.keys(payload).length > 5) return 'bad signal fields';
+    for (const key of ['sdp', 'sdpMid', 'type']) {
+      if (payload[key] !== undefined && (typeof payload[key] !== 'string' || payload[key].length > 1800)) return `bad signal ${key}`;
+    }
+    if (payload.candidate !== undefined) {
+      if (!payload.candidate || typeof payload.candidate !== 'object' || JSON.stringify(payload.candidate).length > 1800) return 'bad signal candidate';
+    }
+    if (payload.sdpMLineIndex !== undefined && (!Number.isInteger(payload.sdpMLineIndex) || payload.sdpMLineIndex < 0 || payload.sdpMLineIndex > 64)) return 'bad signal index';
     return null;
   },
 
@@ -455,7 +493,7 @@ export const VALIDATE = {
       if (typeof lv !== 'object' || lv === null) return 'bad level';
       if (typeof lv.temple !== 'string' || lv.temple.length > 60) return 'bad level.temple';
       if (!Number.isInteger(lv.id) || lv.id < 0) return 'bad level.id';
-      if (typeof lv.filename !== 'string' || lv.filename.length > 120) return 'bad level.filename';
+      if (typeof lv.filename !== 'string' || lv.filename.length > 120 || lv.filename.startsWith('/') || lv.filename.includes('..') || !/^[a-zA-Z0-9_./-]+$/.test(lv.filename)) return 'bad level.filename';
     }
     return null;
   },
@@ -498,7 +536,7 @@ export const VALIDATE = {
     if (!level || typeof level !== 'object') return 'level must be an object';
     if (typeof level.temple !== 'string' || level.temple.length === 0 || level.temple.length > 60) return 'bad level.temple';
     if (!Number.isInteger(level.id) || level.id < 0) return 'bad level.id';
-    if (typeof level.filename !== 'string' || level.filename.length > 120) return 'bad level.filename';
+    if (typeof level.filename !== 'string' || level.filename.length > 120 || level.filename.startsWith('/') || level.filename.includes('..') || !/^[a-zA-Z0-9_./-]+$/.test(level.filename)) return 'bad level.filename';
     return null;
   },
 

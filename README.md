@@ -99,3 +99,30 @@ This project is for non-commercial educational and testing purposes only. All ga
 ## License
 
 [MIT](LICENSE)
+
+## Production deployment
+
+The production server serves the game files and Socket.IO endpoint from one origin. Build and start it with Docker:
+
+```bash
+cp .env.example .env   # set PUBLIC_URL to the HTTPS origin
+docker compose up -d --build
+```
+
+Put Nginx in front using [`deploy/nginx.conf.example`](deploy/nginx.conf.example). It terminates TLS, forwards `/socket.io/` with WebSocket upgrade headers, and proxies all other paths to port 8080. Use a real DNS name and certificate; do not expose the container port directly to the Internet.
+
+Useful environment variables are `PORT` (default `8080`), `PUBLIC_URL`, `ALLOWED_ORIGINS`, `TRUST_PROXY=1`, `EMPTY_ROOM_TTL_MS`, `SEAT_GRACE_MS`, `COUNTDOWN_MS`, `MAX_ROOMS`, `RATE_CREATE_PER_MIN`, `RATE_JOIN_PER_MIN`, `RATE_MESSAGE_PER_MIN`, and `LOG_LEVEL`. Secrets are not required or committed.
+
+The room flow is: create or join with a four character code, wait for both clients to load, press ready, then the server starts the countdown. A reconnecting client resumes its seat with a short lived browser token. Share the invite URL from the lobby; on phones, open it in the same browser and rotate to landscape for the game controls.
+
+For troubleshooting, check `docker compose logs -f`, request `/healthz`, verify that the browser origin matches `PUBLIC_URL`, and confirm Nginx forwards `/socket.io/` unchanged. A red connection banner means the client is reconnecting; refreshing the page resumes the seat while its grace period is active.
+
+## Development
+
+```bash
+npm install
+npm run test:mobile
+cd server && npm ci && npm test
+```
+
+The server can be run locally with `npm --prefix server run dev`. The multiplayer debug HUD is restricted to localhost and is not enabled on public hosts.
