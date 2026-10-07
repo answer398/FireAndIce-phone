@@ -215,7 +215,8 @@ export const ROOM_ERRORS = {
  * adapter's threshold correction (soft position lerp, hard snap).
  *
  * {
- *   seq: 12,              // monotonic snapshot counter (host)
+ *   e: 'host-epoch',      // host page epoch; changes on a host reload
+ *   seq: 12,              // monotonic snapshot counter (within the epoch)
  *   ack: 41,              // last guest input:frame seq the host processed
  *   r: 3,                 // roundId this snapshot belongs to (stale = dropped)
  *   same: true?,          // skip-unchanged: everything below is omitted
@@ -253,6 +254,7 @@ function validChar(ch) {
 
 function snapshotValidator(payload) {
     if (!payload || typeof payload !== 'object') return 'snapshot must be an object';
+    if (payload.e !== undefined && (typeof payload.e !== 'string' || payload.e.length < 8 || payload.e.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(payload.e))) return 'bad epoch';
     if (!isInt(payload.seq)) return 'bad seq';
     if (payload.ack !== -1 && !isInt(payload.ack)) return 'bad ack';
     // Round identity: packets from an older round are dropped at relay.
