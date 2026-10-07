@@ -1,237 +1,47 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fireboy &amp; Watergirl Play Online</title>
-    <link rel="icon" type="image/x-icon" href="img/icon.png">
-    <style>
-        :root {
-            --fire-color: #ff4d4d;
-            --water-color: #33ccff;
-            --bg-color: #121214;
-            --card-bg: #1e1e24;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: var(--bg-color);
-            color: #fff;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            overflow-x: hidden;
-            background-image: url("img/background.jpg");
-            background-repeat: no-repeat;
-            background-size: cover;
-            background-attachment: fixed;
-        }
-
-        body::before, body::after {
-            content: '';
-            position: absolute;
-            width: 300px;
-            height: 300px;
-            border-radius: 50%;
-            filter: blur(150px);
-            z-index: -1;
-            opacity: 0.15;
-        }
-        body::before { top: 10%; left: 10%; background: var(--fire-color); }
-        body::after { bottom: 10%; right: 10%; background: var(--water-color); }
-
-        header {
-            text-align: center;
-            margin-bottom: 40px;
-            animation: fadeInDown 0.8s ease;
-        }
-
-        header h1 {
-            font-size: 2.5rem;
-            margin-bottom: 10px;
-            background: linear-gradient(45deg, var(--fire-color), var(--water-color));
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        header p {
-            color: #aaa;
-            font-size: 1.1rem;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 25px;
-            width: 100%;
-            max-width: 1000px;
-            animation: fadeInUp 0.8s ease;
-        }
-
-        .card {
-            background: var(--card-bg);
-            border: 2px solid #2a2a35;
-            border-radius: 16px;
-            padding: 30px 20px;
-            text-align: center;
-            text-decoration: none;
-            color: #fff;
-            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
-
-        .card:nth-child(odd):hover {
-            border-color: var(--fire-color);
-            box-shadow: 0 10px 20px rgba(255, 77, 77, 0.2);
-            transform: translateY(-5px);
-        }
-        .card:nth-child(even):hover {
-            border-color: var(--water-color);
-            box-shadow: 0 10px 20px rgba(51, 204, 255, 0.2);
-            transform: translateY(-5px);
-        }
-
-        .card .tag {
-            font-size: 0.9rem;
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-bottom: 10px;
-        }
-        .card:nth-child(odd) .tag { color: var(--fire-color); }
-        .card:nth-child(even) .tag { color: var(--water-color); }
-
-        .card h2 { font-size: 1.6rem; margin-bottom: 8px; }
-
-        .card .desc {
-            font-size: 0.9rem;
-            color: #888;
-            margin-bottom: 20px;
-            line-height: 1.4;
-        }
-
-        .card .play-btn {
-            background: #2a2a35;
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 0.95rem;
-            transition: background 0.2s;
-        }
-        .card:nth-child(odd):hover .play-btn { background: var(--fire-color); color: #000; }
-        .card:nth-child(even):hover .play-btn { background: var(--water-color); color: #000; }
-
-        footer {
-            margin-top: 50px;
-            text-align: center;
-            font-size: 0.85rem;
-            color: #555;
-        }
-        footer a { color: #888; text-decoration: none; }
-        footer a:hover { color: #fff; }
-
-        @keyframes fadeInDown {
-            from { opacity: 0; transform: translateY(-20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes fadeInUp {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        @media (max-width: 600px) {
-            header h1 { font-size: 1.8rem; }
-            .grid { grid-template-columns: 1fr; }
-        }
-    </style>
-    <link rel="stylesheet" href="games/lib/lobby/lobby.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10131a">
+  <meta name="description" content="森林冰火人 1-6，创建房间，把链接发给朋友一起玩。">
+  <title>森林冰火人 · 双人联机</title>
+  <link rel="icon" href="img/icon.png">
+  <link rel="stylesheet" href="games/lib/lobby/lobby.css">
+  <style>
+    :root { color-scheme: dark; --safe-x: max(18px, env(safe-area-inset-left)); }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #0d1118; }
+    body { min-height: 100dvh; overflow-x: hidden; color: #f5f7fb; font: 16px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at 12% 0%, rgba(255, 81, 73, .22), transparent 32rem), radial-gradient(circle at 88% 100%, rgba(48, 187, 255, .17), transparent 34rem), #0d1118; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+    main { width: min(1100px, 100%); margin: 0 auto; padding: calc(28px + env(safe-area-inset-top)) var(--safe-x) calc(34px + env(safe-area-inset-bottom)); }
+    .brand { display: flex; gap: 14px; align-items: center; margin-bottom: 24px; }
+    .brand-mark { width: 48px; height: 48px; border-radius: 14px; object-fit: cover; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
+    h1 { margin: 0; font-size: clamp(1.45rem, 5vw, 2.35rem); letter-spacing: 0; }
+    .brand p { margin: 3px 0 0; color: #a9b2c1; }
+    .portal-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr); gap: 16px; align-items: start; }
+    .portal-section { min-width: 0; padding: 20px; border: 1px solid rgba(255,255,255,.1); border-radius: 14px; background: rgba(19,24,34,.88); box-shadow: 0 16px 50px rgba(0,0,0,.18); }
+    .portal-section h2 { margin: 0 0 5px; font-size: 1.15rem; }
+    .portal-section > p { margin: 0 0 15px; color: #a9b2c1; font-size: .92rem; }
+    #lobby-mp { width: 100%; max-width: none; margin: 0; }
+    #lobby-mp .lbp-box { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+    #lobby-mp .lbp-head { display: none; }
+    .game-guide { display: grid; gap: 9px; }
+    .game-guide-row { display: flex; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: rgba(255,255,255,.035); }
+    .game-guide-row strong { font-weight: 650; }
+    .game-guide-row span { color: #99a4b5; font-size: .84rem; text-align: right; }
+    footer { margin-top: 18px; color: #778295; font-size: .8rem; }
+    @media (max-width: 760px) { .portal-grid { grid-template-columns: 1fr; } .portal-section { padding: 17px; } }
+  </style>
 </head>
 <body>
-
-    <header>
-        <h1>Fireboy &amp; Watergirl Play Online</h1>
-        <p>森林冰火人全系列在线玩 (1 - 6)</p>
-    </header>
-
-    <div class="grid">
-        <a href="games/1-forest-temple/" class="card">
-            <div>
-                <div class="tag">Game 1</div>
-                <h2>森林神庙</h2>
-                <div class="desc">The Forest Temple<br>第一代经典启航</div>
-            </div>
-            <div class="play-btn">START GAME</div>
-        </a>
-
-        <a href="games/2-light-temple/" class="card">
-            <div>
-                <div class="tag">Game 2</div>
-                <h2>光明神庙</h2>
-                <div class="desc">The Light Temple<br>利用光线与镜子解谜</div>
-            </div>
-            <div class="play-btn">START GAME</div>
-        </a>
-
-        <a href="games/3-ice-temple/" class="card">
-            <div>
-                <div class="tag">Game 3</div>
-                <h2>寒冰圣殿</h2>
-                <div class="desc">The Ice Temple<br>冰面滑行与冻结危机</div>
-            </div>
-            <div class="play-btn">START GAME</div>
-        </a>
-
-        <a href="games/4-crystal-temple/" class="card">
-            <div>
-                <div class="tag">Game 4</div>
-                <h2>水晶殿</h2>
-                <div class="desc">The Crystal Temple<br>通过传送门穿梭空间</div>
-            </div>
-            <div class="play-btn">START GAME</div>
-        </a>
-
-        <a href="games/5-elements/" class="card">
-            <div>
-                <div class="tag">Game 5</div>
-                <h2>元素</h2>
-                <div class="desc">Elements<br>全新多神庙元素大集合</div>
-            </div>
-            <div class="play-btn">START GAME</div>
-        </a>
-
-        <a href="games/6-fairy-tales/" class="card">
-            <div>
-                <div class="tag">Game 6</div>
-                <h2>童话</h2>
-                <div class="desc">Fairy Tales<br>操控小精灵协助通关</div>
-            </div>
-            <div class="play-btn">START GAME</div>
-        </a>
+  <main>
+    <header class="brand"><img class="brand-mark" src="img/icon.png" alt=""><div><h1>森林冰火人 · 双人联机</h1><p>创建一个房间，把链接发给朋友，马上开始。</p></div></header>
+    <div class="portal-grid">
+      <section class="portal-section" aria-labelledby="room-title"><h2 id="room-title">创建联机房间</h2><p>房主选择游戏，朋友加入后会自动看到同一选择。</p><div id="lobby-mp" aria-label="双人联机大厅"></div></section>
+      <section class="portal-section" aria-labelledby="games-title"><h2 id="games-title">游戏选择</h2><p>六部游戏都保留原始关卡与资源。</p><div class="game-guide" aria-label="六部游戏入口"><div class="game-guide-row"><strong>1 · 森林神庙</strong><span>The Forest Temple</span></div><div class="game-guide-row"><strong>2 · 光明神庙</strong><span>The Light Temple</span></div><div class="game-guide-row"><strong>3 · 寒冰圣殿</strong><span>The Ice Temple</span></div><div class="game-guide-row"><strong>4 · 水晶殿</strong><span>The Crystal Temple</span></div><div class="game-guide-row"><strong>5 · 元素</strong><span>Elements</span></div><div class="game-guide-row"><strong>6 · 童话</strong><span>Fairy Tales</span></div></div></section>
     </div>
-
-    <section id="lobby-mp" aria-label="双人联机大厅"></section>
-
-    <footer>
-        <p>
-            <a href="https://github.com/wyf9/Fireboy-and-Watergirl-deploy" target="_blank">GitHub</a>
-            &nbsp;|&nbsp;
-            <a href="https://github.com/1224HuangJin/fireboy-and-watergirl" target="_blank">Original Source</a>
-        </p>
-    </footer>
-
-    <script type="module" src="games/lib/lobby/lobby.js"></script>
+    <footer>无需注册。桌面端支持键盘，手机横屏体验最佳。</footer>
+  </main>
+  <script type="module" src="games/lib/lobby/lobby.js"></script>
 </body>
 </html>

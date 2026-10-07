@@ -8,6 +8,9 @@
  * To restore per-game copies and remove this SW, run: tools/restore-assets.sh
  */
 
+// Versioned shell cache. Dynamic room URLs and responses are never cached.
+var CACHE_VERSION = 'fbw-shell-v3-2026-10-07';
+
 // Assets shared across ALL 6 games
 var ALL_GAMES = [
     'assets/atlasses/CharAssets.json',
@@ -83,11 +86,20 @@ var G1234_SET = new Set(GAMES_1234);
 var GAME_DIR_RE = /^(\/games\/[^/]+\/)(assets\/.+)$/;
 
 self.addEventListener('install', function (e) {
+    e.waitUntil(caches.open(CACHE_VERSION).then(function (cache) {
+        return cache.addAll(['/games/lib/mobile/game-shell.js']);
+    }));
     self.skipWaiting();
 });
 
 self.addEventListener('activate', function (e) {
-    e.waitUntil(self.clients.claim());
+    e.waitUntil(caches.keys().then(function (keys) {
+        return Promise.all(keys.filter(function (key) { return key !== CACHE_VERSION; }).map(function (key) { return caches.delete(key); }));
+    }).then(function () { return self.clients.claim(); }));
+});
+
+self.addEventListener('message', function (e) {
+    if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', function (e) {

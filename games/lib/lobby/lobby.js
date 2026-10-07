@@ -75,6 +75,7 @@ void (async () => {
       <div class="lbp-view" id="lbp-seated" style="display:none">
         <div class="lbp-codewrap">
           <div class="lbp-code" id="lbp-room-code"></div>
+          <div class="lbp-game-picked" id="lbp-game-picked"></div>
           <div class="lbp-state" id="lbp-room-state"></div>
         </div>
         <div class="lbp-invite">
@@ -111,6 +112,7 @@ void (async () => {
     join: $('lbp-join'),
     code: $('lbp-code'),
     roomCode: $('lbp-room-code'),
+    gamePicked: $('lbp-game-picked'),
     roomState: $('lbp-room-state'),
     url: $('lbp-url'),
     copy: $('lbp-copy'),
@@ -252,6 +254,8 @@ void (async () => {
 
     el.roomCode.textContent = session.code;
     const state = session.state;
+    const selected = GAMES.find((game) => game.id === session.game);
+    el.gamePicked.textContent = selected ? `本局游戏：${selected.zh}` : '等待房主选择游戏…';
     el.roomState.textContent = STATE_TEXT[state?.state] ?? state?.state ?? '连接中…';
     el.url.value = inviteUrl() ?? '';
 

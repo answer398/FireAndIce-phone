@@ -126,11 +126,12 @@
         '}',
         'canvas { touch-action: manipulation; }',   /* canvas events themselves untouched */
         '',
+        ':root { --fb-pad-size: 92px; --fb-pad-gap: 8px; --fb-pad-alpha: 1; }',
         '.tc-pad {',
         '  position: fixed;',
         '  bottom: calc(10px + env(safe-area-inset-bottom, 0px));',
         '  z-index: 2147480002;',                   /* above the guest video layer */
-        '  display: flex; flex-direction: column; align-items: center; gap: 8px;',
+        '  display: flex; flex-direction: column; align-items: center; gap: var(--fb-pad-gap);',
         '  pointer-events: auto;',                  /* dead zone swallows stray thumbs */
         '  touch-action: none;',
         '  user-select: none; -webkit-user-select: none;',
@@ -145,7 +146,7 @@
         '.tc-label-fire  { color: rgba(255,77,77,0.5); }',
         '.tc-row { display: flex; gap: 8px; justify-content: center; }',
         '.tc-btn {',
-        '  width: 92px; height: 92px; border-radius: 18px;',
+        '  width: var(--fb-pad-size); height: var(--fb-pad-size); border-radius: 18px;',
         '  border: 2px solid; box-sizing: border-box;',
         '  display: flex; align-items: center; justify-content: center;',
         '  font: bold 26px/1 sans-serif; text-align:center;',
@@ -154,12 +155,12 @@
         '}',
         '.tc-btn-jump { border-radius: 50%; }',
         '.tc-btn-water {',
-        '  background: rgba(51,204,255,0.12); border-color: rgba(51,204,255,0.30);',
+        '  background: rgba(51,204,255,calc(.12 * var(--fb-pad-alpha))); border-color: rgba(51,204,255,0.30);',
         '  color: rgba(51,204,255,0.65);',
         '}',
         '.tc-btn-water.active { background: rgba(51,204,255,0.38); border-color: rgba(51,204,255,0.60); }',
         '.tc-btn-fire {',
-        '  background: rgba(255,77,77,0.12); border-color: rgba(255,77,77,0.30);',
+        '  background: rgba(255,77,77,calc(.12 * var(--fb-pad-alpha))); border-color: rgba(255,77,77,0.30);',
         '  color: rgba(255,77,77,0.65);',
         '}',
         '.tc-btn-fire.active { background: rgba(255,77,77,0.38); border-color: rgba(255,77,77,0.60); }',
@@ -171,7 +172,7 @@
         '  .tc-pad-right { right: calc(16px + env(safe-area-inset-right, 0px)); }',
         '  .tc-row { gap: 12px; }',
         '  .tc-label { font-size: 13px; }',
-        '  .tc-btn { width: 120px; height: 120px; border-radius: 24px; font-size: 32px; }',
+        '  :root { --fb-pad-size: 120px; --fb-pad-gap: 12px; }',
         '}',
         '/* landscape phones: compact pads. Declared AFTER the width rule so a',
         '   phone that matches both (e.g. 844x390 iPhone landscape) gets the',
@@ -179,7 +180,7 @@
         '@media (max-height: 480px) {',
         '  .tc-pad { bottom: calc(8px + env(safe-area-inset-bottom, 0px)); gap: 6px; }',
         '  .tc-row { gap: 6px; }',
-        '  .tc-btn { width: 68px; height: 68px; border-radius: 14px; font-size: 20px; }',
+        '  :root { --fb-pad-size: 68px; --fb-pad-gap: 6px; }',
         '}',
         '/* desktop with a mouse: pads off unless explicitly requested */',
         '@media (min-width: 900px) and (hover: hover) {',
@@ -308,6 +309,7 @@
             e.preventDefault();
             heldPointer = e.pointerId;
             pointerHolds.push({ pointerId: e.pointerId, release: release });
+            if (navigator.vibrate) { try { navigator.vibrate(8); } catch (err) {} }
             try {
                 btn.setPointerCapture(e.pointerId);
             } catch (err) { /* capture unavailable: the document net still catches */ }
@@ -369,6 +371,7 @@
         btn.addEventListener('mousedown', function (e) {
             e.preventDefault();
             held = true;
+            if (navigator.vibrate) { try { navigator.vibrate(8); } catch (err) {} }
             manager.setAction(role, action, true, 'local', { kind: 'touch' });
         });
         btn.addEventListener('mouseup', release);

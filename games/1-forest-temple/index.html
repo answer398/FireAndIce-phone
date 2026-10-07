@@ -4,11 +4,11 @@
     <meta charset="utf-8">
     <script>
     if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("../sw.js", { scope: "/games/" })
+        navigator.serviceWorker.register("../sw.js?v=mobile-shell-v3-2026-10-07", { scope: "/games/" })
             .then(function (reg) {
                 if (reg.installing && !navigator.serviceWorker.controller) {
                     reg.installing.addEventListener("statechange", function () {
-                        if (this.state === "activated") location.reload();
+                        if (this.state === "activated") self.skipWaiting?.();
                     });
                 }
             });
@@ -40,20 +40,8 @@
     </style>
 </head>
 <body>
-    <script>
-    if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("../sw.js", { scope: "/games/" })
-            .then(function (reg) {
-                if (reg.installing && !navigator.serviceWorker.controller) {
-                    reg.installing.addEventListener("statechange", function () {
-                        if (this.state === "activated") location.reload();
-                    });
-                }
-            });
-    }
-    </script>
-
     <!-- 4399 platform API shim (h5api) must exist before the game bundle runs -->
+    <script defer src="../lib/mobile/game-shell.js"></script>
     <script src="../lib/platform-shim.js"></script>
 
     <script data-main="js/game.js" src="../lib/require.js"></script>
@@ -64,20 +52,8 @@
     </div>
 
     <a id="btn-back" class="game-ui-btn" href="../../">&#8592; Menu</a>
-    <button id="btn-fullscreen" class="game-ui-btn" onclick="document.documentElement.requestFullscreen()">Fullscreen</button>
+    <button id="btn-fullscreen" class="game-ui-btn" type="button">Fullscreen</button>
 
-    <script>
-    if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("../sw.js", { scope: "/games/" })
-            .then(function (reg) {
-                if (reg.installing && !navigator.serviceWorker.controller) {
-                    reg.installing.addEventListener("statechange", function () {
-                        if (this.state === "activated") location.reload();
-                    });
-                }
-            });
-    }
-    </script>
     <script src="../lib/input/input-manager.js"></script>
     <script src="../lib/input/touch-pads.js"></script>
 

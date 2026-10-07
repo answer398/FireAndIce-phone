@@ -1,0 +1,27 @@
+{
+  "name": "fireandice-phone",
+  "version": "1.0.0",
+  "description": "This repository is an upgraded, batch-processing version of the original H5 game grabber. It enables you to download the game assets completely offline, and also provides direct online play via GitHub Pages!",
+  "main": "index.js",
+  "scripts": {
+    "test:mobile": "node tests/mobile-e2e.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/answer398/FireAndIce-phone.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  },
+  "bugs": {
+    "url": "https://github.com/answer398/FireAndIce-phone/issues"
+  },
+  "homepage": "https://github.com/answer398/FireAndIce-phone#readme",
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}
