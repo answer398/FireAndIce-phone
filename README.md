@@ -1,128 +1,99 @@
-# Fireboy and Watergirl - Play Online
+# Fireboy & Watergirl Phone
 
-森林冰火人全系列 (1-6) 在线游玩
+森林冰火人 1-6 的离线网页游戏与双人联机版本，支持桌面键盘、手机触控和同源 Socket.IO 联机。
 
-> **[Play Online / 在线玩](https://waterfire.p.wyf9.top/)**
+## 手机端实测
 
-## About
+手机端建议横屏使用。左右移动按钮位于左侧，跳跃按钮位于右侧，支持多指同时操作。
 
-HTML5 version of the Fireboy and Watergirl game series (1-6), deployed as a static site. Supports both desktop keyboard and mobile touch controls.
+![手机端联机游戏实测](docs/mobile-gameplay.jpg)
 
-基于 HTML5 的森林冰火人游戏全系列在线版，支持桌面键盘和移动端触屏操作。
+> iPhone Safari 不支持普通网页强制全屏。游戏页会提供“加入主屏幕”提示；从主屏幕启动后可以获得没有 Safari 地址栏的沉浸式体验。iPad 通常支持网页全屏按钮。
 
-## Games
+## 项目来源
 
-| # | Name | Temple |
-|---|------|--------|
-| 1 | Forest Temple | 森林神庙 |
-| 2 | Light Temple | 光明神庙 |
-| 3 | Ice Temple | 寒冰圣殿 |
-| 4 | Crystal Temple | 水晶殿 |
-| 5 | Elements | 元素 |
-| 6 | Fairy Tales | 童话 |
+本项目 fork 并基于以下原始仓库进行整理和扩展：
 
-## Controls
+- 原始资源抓取仓库：[yezhiyi9670/fireboy-and-watergirl-grabber](https://github.com/yezhiyi9670/fireboy-and-watergirl-grabber)
+- 游戏部署参考仓库：[1224HuangJin/Fireboy-and-Watergirl](https://github.com/1224HuangJin/Fireboy-and-Watergirl)
 
-**Desktop:**
+本仓库增加了六部游戏统一入口、移动端适配、统一输入管理、双人房间、断线恢复、Socket.IO 同步、Docker 和 HTTPS/WSS 部署配置。
 
-| Character | Jump | Left | Right |
-|-----------|------|------|-------|
-| Watergirl | W | A | D |
-| Fireboy | Arrow Up | Arrow Left | Arrow Right |
+## 游戏列表
 
-**Mobile:** Landscape is the default layout. Each character gets three large
-semi-transparent buttons — left / jump / right — pinned to the screen corners
-(Watergirl left, Fireboy right; no key names shown). Holding a direction while
-jumping works (true multi-touch), and held keys are always released when the
-page loses focus, is hidden, or a touch is interrupted. A rotate hint appears
-in portrait.
+| 编号 | 游戏 | 目录 |
+| --- | --- | --- |
+| 1 | Forest Temple / 森林神庙 | `games/1-forest-temple` |
+| 2 | Light Temple / 光明神庙 | `games/2-light-temple` |
+| 3 | Ice Temple / 寒冰圣殿 | `games/3-ice-temple` |
+| 4 | Crystal Temple / 水晶殿 | `games/4-crystal-temple` |
+| 5 | Elements / 元素 | `games/5-elements` |
+| 6 | Fairy Tales / 童话 | `games/6-fairy-tales` |
 
-All input — physical keyboard, touch buttons, and remote network input —
-flows through one unified manager (`games/lib/input/input-manager.js`),
-which translates everything into the exact key events the game engine
-listens for. See [MULTIPLAYER.md](MULTIPLAYER.md) for the multiplayer input
-path and loop-prevention rules.
+## 本地运行
 
-## Project Structure
-
-```
-index.html              # Main game selection page
-games/
-  lib/
-    require.js          # Shared module loader
-    input/
-      input-manager.js  # Unified InputManager (keyboard/touch/remote funnel)
-      touch-pads.js     # Multi-touch pads UI + mobile viewport hardening
-      selftest.mjs      # Headless tests (node games/lib/input/selftest.mjs)
-    multiplayer/        # Online multiplayer extension layer
-    platform-shim.js    # 4399 h5api stub (loading screen fix)
-  sw.js                 # Service Worker (shared asset redirect)
-  shared-assets/        # Deduplicated common assets
-  1-forest-temple/      # Game 1
-  2-light-temple/       # Game 2
-  3-ice-temple/         # Game 3
-  4-crystal-temple/     # Game 4
-  5-elements/           # Game 5
-  6-fairy-tales/        # Game 6
-server/                 # Node static hosting + room/signaling server
-tools/                  # Build & utility scripts
-  restore-assets.sh     # Restore per-game asset copies (remove SW dependency)
-  *.py                  # HAR extraction scripts
-img/                    # Main page assets
-```
-
-## Shared Assets & Service Worker
-
-Identical assets across games (audio, sprites, fonts, etc.) are stored once in `games/shared-assets/` to reduce repository size. A Service Worker (`games/sw.js`) transparently redirects asset requests to the shared location.
-
-To restore standalone per-game copies and remove the Service Worker:
-
-```bash
-bash tools/restore-assets.sh
-```
-
-## Source Repositories
-
-This project is based on game resources from:
-
-- [1224HuangJin/Fireboy-and-Watergirl](https://github.com/1224HuangJin/Fireboy-and-Watergirl) - Game deployment & portal page
-- [yezhiyi9670/fireboy-and-watergirl-grabber](https://github.com/yezhiyi9670/fireboy-and-watergirl-grabber) - Original HAR grabber scripts
-
-See [README.original.md](README.original.md) for the original README.
-
-## Disclaimer
-
-This project is for non-commercial educational and testing purposes only. All game assets belong to their respective owners.
-
-本项目仅供非商业性学习与研究使用。所有游戏资源版权归原作者所有。
-
-## License
-
-[MIT](LICENSE)
-
-## Production deployment
-
-The production server serves the game files and Socket.IO endpoint from one origin. Build and start it with Docker:
-
-```bash
-cp .env.example .env   # set PUBLIC_URL to the HTTPS origin
-docker compose up -d --build
-```
-
-Put Nginx in front using [`deploy/nginx.conf.example`](deploy/nginx.conf.example). It terminates TLS, forwards `/socket.io/` with WebSocket upgrade headers, and proxies all other paths to port 8080. Use a real DNS name and certificate; do not expose the container port directly to the Internet.
-
-Useful environment variables are `PORT` (default `8080`), `PUBLIC_URL`, `ALLOWED_ORIGINS`, `TRUST_PROXY=1`, `EMPTY_ROOM_TTL_MS`, `SEAT_GRACE_MS`, `COUNTDOWN_MS`, `MAX_ROOMS`, `RATE_CREATE_PER_MIN`, `RATE_JOIN_PER_MIN`, `RATE_MESSAGE_PER_MIN`, and `LOG_LEVEL`. Secrets are not required or committed.
-
-The room flow is: create or join with a four character code, wait for both clients to load, press ready, then the server starts the countdown. A reconnecting client resumes its seat with a short lived browser token. Share the invite URL from the lobby; on phones, open it in the same browser and rotate to landscape for the game controls.
-
-For troubleshooting, check `docker compose logs -f`, request `/healthz`, verify that the browser origin matches `PUBLIC_URL`, and confirm Nginx forwards `/socket.io/` unchanged. A red connection banner means the client is reconnecting; refreshing the page resumes the seat while its grace period is active.
-
-## Development
+需要 Node.js 20 或更高版本。
 
 ```bash
 npm install
-npm run test:mobile
-cd server && npm ci && npm test
+npm --prefix server ci
+npm --prefix server run dev
 ```
 
-The server can be run locally with `npm --prefix server run dev`. The multiplayer debug HUD is restricted to localhost and is not enabled on public hosts.
+浏览器打开 <http://127.0.0.1:8080/>。静态托管可以运行单机游戏，但不提供房间和 Socket.IO 联机功能。
+
+## 操作方式
+
+桌面端：水娃使用 `W/A/D`，火娃使用 `↑/←/→`。
+
+手机端横屏后，左侧两个按钮控制左右移动，右侧按钮控制跳跃，可以同时按住移动和跳跃。页面失焦、切后台或触控中断时，按键会自动释放。
+
+联机流程：
+
+1. 在大厅选择游戏和角色并创建房间。
+2. 将四位房间码或邀请链接发给另一台设备。
+3. 两名玩家加载完成后分别点击“准备”。
+4. 服务端统一倒计时并开始游戏。
+5. 短暂断线时，原座位会保留一段时间，刷新页面可恢复。
+
+## 生产部署
+
+项目提供 `Dockerfile`、`docker-compose.yml`、`deploy/nginx.conf.example` 和 `.env.example`。
+
+```bash
+cp .env.example .env
+# 修改 PUBLIC_URL 和 ALLOWED_ORIGINS
+docker compose up -d --build
+```
+
+Nginx 需要使用 HTTPS，并将 `/socket.io/` 原样转发到 Node 服务，同时转发 `Upgrade`、`Connection: upgrade` 和 `X-Forwarded-*` 请求头。Node 默认监听 8080，健康检查地址为 `/healthz`。
+
+常用环境变量：`PORT`、`PUBLIC_URL`、`ALLOWED_ORIGINS`、`TRUST_PROXY`、`EMPTY_ROOM_TTL_MS`、`SEAT_GRACE_MS`、`MAX_ROOMS`、`RATE_CREATE_PER_MIN`、`RATE_JOIN_PER_MIN`、`RATE_MESSAGE_PER_MIN`。
+
+## 测试
+
+```bash
+node games/lib/input/selftest.mjs
+npm --prefix server test
+npm run test:mobile
+```
+
+测试覆盖房间状态机、角色约束、断线恢复、旧回合隔离、payload 校验、限流、容量保护、移动端房间流程、触控输入和重连。
+
+## 目录结构
+
+```text
+index.html                 # 联机大厅和游戏入口
+games/                     # 六部游戏、共享资源和浏览器端模块
+common/protocol/           # 浏览器和服务端共用协议
+server/                    # Express 静态服务、房间状态机和 Socket.IO
+tests/                     # 移动端浏览器 E2E 测试
+deploy/                    # Nginx 配置示例
+docs/mobile-gameplay.jpg   # 手机端实测截图
+```
+
+## 版权与使用提醒
+
+本项目仅用于非商业学习、研究和测试。游戏名称、角色、音频、图片、关卡和其他素材的版权归其原作者或权利人所有。部署、分享或修改前请自行确认所在地区和使用场景的法律要求。
+
+项目代码以 [MIT License](LICENSE) 发布，但该许可证不改变第三方游戏素材的权利归属。
