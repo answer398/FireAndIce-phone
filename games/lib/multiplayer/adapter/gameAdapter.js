@@ -166,7 +166,6 @@ export class GameAdapter {
      */
     this.transition = null;
     this.transitionSeq = 0;
-    this.stateStartGuard = null;
   }
 
   #needsManualLevelStart;
@@ -177,9 +176,6 @@ export class GameAdapter {
 
   #beginTransition(kind) {
     if (this.transition) return null;
-    // A new explicit transition supersedes the duplicate suppression window
-    // used after a watchdog force. The old fade callback must not block it.
-    this.stateStartGuard = null;
     const token = ++this.transitionSeq;
     this.transition = { kind, token, timer: null };
     return token;
@@ -344,7 +340,6 @@ export class GameAdapter {
   #captureGame(game) {
     if (this.game === game) return;
     this.game = game;
-    this.#installStateStartGuard(game);
     logger.info('game instance captured');
     this.bus.emit('adapter:game', game);
     // Resolve temple id -> data path so getLevel() can report the descriptor
@@ -354,31 +349,6 @@ export class GameAdapter {
     this.#watchLoop(game);
     // Poll the engine's state machine; cheap and completely non-invasive.
     this.#startPhasePolling();
-  }
-
-  /**
-   * A killed Phaser fade can still run its private tween callback later. When
-   * a watchdog has already entered the target state, ignore that stale second
-   * `state.start()` call while allowing subsequent explicit transitions.
-   */
-  #installStateStartGuard(game) {
-    const state = game?.state;
-    if (!state || typeof state.start !== 'function' || state.start.__mpStartGuard) return;
-    const original = state.start;
-    const adapter = this;
-    const guarded = function (key, ...args) {
-      const guard = adapter.stateStartGuard;
-      if (guard && guard.key === key && Date.now() < guard.until && state.current === key) return;
-      return original.apply(this, [key, ...args]);
-    };
-    guarded.__mpStartGuard = true;
-    state.start = guarded;
-  }
-
-  #forceStateStart(game, key, levelDesc) {
-    this.stateStartGuard = { key, until: Date.now() + 5000 };
-    if (key === 'level') this.#needsManualLevelStart = true;
-    game.state.start(key, true, false, levelDesc);
   }
 
   /**
@@ -569,7 +539,12 @@ export class GameAdapter {
     // skipToLevel reads `this.game` — but the engine nulls a retired state's
     // game reference once another state took over, and we call it cross-state.
     // Bind the call to a shim whose game is OUR live instance.
-    this.#navigateToLevel(levelDesc, () => menu.skipToLevel.call({ game: this.game }, levelDesc), token);
+    try {
+      this.#navigateToLevel(levelDesc, () => menu.skipToLevel.call({ game: this.game }, levelDesc), token);
+    } catch (err) {
+      this.#finishTransition(token);
+      throw err;
+    }
     logger.info('startLevel', temple, id);
     return true;
   }
@@ -614,7 +589,7 @@ export class GameAdapter {
       // another lifecycle path won the race, so never resurrect this level.
       if (current !== 'level') {
         const canForceEnter = this.transition.kind === 'enter' &&
-          game.state?.fading && new Set(['menu', 'levelMenu', 'endGame']).has(current);
+          game.state?.fading && new Set(['menu', 'levelMenu']).has(current);
         if (!canForceEnter) {
           this.#finishTransition(token);
           return;
@@ -1019,15 +994,25 @@ export class GameAdapter {
     if (token == null) return false;
     if (typeof level.retry === 'function') {
       // A wedged fade flag would silently swallow the retry's state.fade.
-      this.#clearStuckFade(game);
-      level.retry();
+      try {
+        this.#clearStuckFade(game);
+        level.retry();
+      } catch (err) {
+        this.#finishTransition(token);
+        throw err;
+      }
       logger.info('level restart via retry()');
       this.#verifyLevelEntry(game, level, level.levelData, token);
       return true;
     }
     // Fallback: re-enter with the stored descriptor (same fade path).
     if (level.levelData && game?.state?.states?.['menu']?.skipToLevel) {
-      game.state.states['menu'].skipToLevel(level.levelData);
+      try {
+        game.state.states['menu'].skipToLevel(level.levelData);
+      } catch (err) {
+        this.#finishTransition(token);
+        throw err;
+      }
       logger.info('level restart via skipToLevel');
       this.#verifyLevelEntry(game, level, level.levelData, token);
       return true;
@@ -1082,9 +1067,14 @@ export class GameAdapter {
     if (token == null) return false;
     const menu = game.state?.states?.['menu'];
     if (typeof menu?.startTemple === 'function') {
-      this.#clearStuckFade(game);
-      // startTemple also reads `this.game` — same cross-state shim as above.
-      menu.startTemple.call({ game }, game.currentTemple);
+      try {
+        this.#clearStuckFade(game);
+        // startTemple also reads `this.game` — same cross-state shim as above.
+        menu.startTemple.call({ game }, game.currentTemple);
+      } catch (err) {
+        this.#finishTransition(token);
+        throw err;
+      }
       logger.info('level exit via menu.startTemple');
       const timer = setTimeout(() => {
         if (!this.transition || this.transition.token !== token) return;
@@ -1104,8 +1094,13 @@ export class GameAdapter {
     }
     // Stop the level music the way Level.quit does, then fade out.
     try { game.level?.sounds?.levelMusic?.stop?.(); } catch { /* audio gone */ }
-    this.#clearStuckFade(game);
-    game.state.fade('levelMenu', true, false, game.currentTemple);
+    try {
+      this.#clearStuckFade(game);
+      game.state.fade('levelMenu', true, false, game.currentTemple);
+    } catch (err) {
+      this.#finishTransition(token);
+      throw err;
+    }
     logger.info('level exit via state.fade(levelMenu)');
     const timer = setTimeout(() => {
       if (!this.transition || this.transition.token !== token) return;
