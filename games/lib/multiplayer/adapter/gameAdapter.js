@@ -174,10 +174,10 @@ export class GameAdapter {
   #templeIndexPromise;
   #gemCache;
 
-  #beginTransition(kind) {
+  #beginTransition(kind, target = null) {
     if (this.transition) return null;
     const token = ++this.transitionSeq;
-    this.transition = { kind, token, timer: null };
+    this.transition = { kind, token, target, timer: null };
     return token;
   }
 
@@ -509,8 +509,19 @@ export class GameAdapter {
     if (!this.game || !req) throw new Error('adapter: game not captured');
     if (this.phase === 'level' && this.level?.levelData?.id === id) return false; // already there
     // A restart/exit transition owns the state machine until its lifecycle
-    // hook fires. Do not let a racing snapshot start a second fade.
-    if (this.transition) return false;
+    // hook fires. A newer host level is authoritative, so cancel an older
+    // recovery/restart transition before following that target; same-target
+    // requests remain idempotent.
+    if (this.transition) {
+      const target = this.transition.target;
+      const sameTarget = target?.id === id && target?.temple === temple;
+      if (!sameTarget && (this.transition.kind === 'restart' || this.transition.kind === 'enter')) {
+        this.#cancelTransition();
+        this.#clearStuckFade(this.game);
+      } else {
+        return false;
+      }
+    }
     // The game registers itself in Phaser.GAMES mid-construction — the state
     // manager may not exist yet when the very first snapshot races the boot.
     for (let i = 0; i < 50 && !this.game.state; i++) {
@@ -534,7 +545,7 @@ export class GameAdapter {
     this.game.stage.disableVisibilityChange = true;
     const menu = this.game.state.states['menu'];
     if (!menu || typeof menu.skipToLevel !== 'function') throw new Error('menu skipToLevel unavailable');
-    const token = this.#beginTransition('enter');
+    const token = this.#beginTransition('enter', { temple, id });
     if (token == null) return false;
     // skipToLevel reads `this.game` — but the engine nulls a retired state's
     // game reference once another state took over, and we call it cross-state.
@@ -994,7 +1005,11 @@ export class GameAdapter {
     const level = this.level;
     if (!level) return false;
     const game = this.game;
-    const token = this.#beginTransition('restart');
+    const currentLevel = this.getLevel();
+    const token = this.#beginTransition('restart', {
+      temple: currentLevel?.temple ?? this.game?.currentTemple?.id ?? null,
+      id: level.levelData?.id ?? null,
+    });
     if (token == null) return false;
     if (typeof level.retry === 'function') {
       // A wedged fade flag would silently swallow the retry's state.fade.
@@ -1067,7 +1082,7 @@ export class GameAdapter {
     const game = this.game;
     if (!game || this.phase !== 'level') return false;
     const oldLevel = this.level;
-    const token = this.#beginTransition('exit');
+    const token = this.#beginTransition('exit', { temple: this.getLevel()?.temple ?? null, id: null });
     if (token == null) return false;
     const menu = game.state?.states?.['menu'];
     if (typeof menu?.startTemple === 'function') {

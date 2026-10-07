@@ -148,10 +148,19 @@ export class GuestRoundFollower {
     if (Date.now() - this.lastEnterAt < 1500) return;
     this.entering = true;
     this.lastEnterAt = Date.now();
-    this.adapter
+      this.adapter
       .startLevel({ temple: hostLevel.temple, id: hostLevel.id })
       .then((started) => {
         if (started) logger.info('guest following host into level', hostLevel.id);
+        // A stale recovery transition may have won the race. Retry the host
+        // target after its watchdog is invalidated instead of silently
+        // leaving the guest in the previous level.
+        if (!started) {
+          const current = this.adapter.getLevel();
+          if (!current || current.temple !== hostLevel.temple || current.id !== hostLevel.id) {
+            setTimeout(() => this.#enterHostLevel(hostLevel), 100);
+          }
+        }
       })
       .catch((err) => logger.warn('startLevel failed', err?.message ?? err))
       .finally(() => {
