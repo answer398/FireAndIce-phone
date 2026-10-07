@@ -32,6 +32,9 @@ export class SnapshotSender {
     this.getAck = getAck;
 
     this.seq = 0;
+    // Sequence numbers restart when the host page reloads. The epoch lets a
+    // guest distinguish that fresh stream from an old one it has already seen.
+    this.epoch = globalThis.crypto?.randomUUID?.().replaceAll('-', '') ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
     this.timer = null;
     this.lastHash = null;
     this.enteringLevel = false;
@@ -93,8 +96,8 @@ export class SnapshotSender {
     const unchanged = hash === this.lastHash && this.lastHash !== null;
     this.seq += 1;
     const payload = unchanged
-      ? { seq: this.seq, ack: this.getAck(), r: roundId, same: true }
-      : { seq: this.seq, ack: this.getAck(), r: roundId, snap: state };
+      ? { e: this.epoch, seq: this.seq, ack: this.getAck(), r: roundId, same: true }
+      : { e: this.epoch, seq: this.seq, ack: this.getAck(), r: roundId, snap: state };
     this.lastHash = hash;
 
     this.net.emit(this.P.EVENTS.SYNC_SNAPSHOT, payload);
@@ -121,11 +124,14 @@ export class GuestSnapshotApplier {
     this.P = P;
 
     this.lastSeq = -1;
+    this.lastEpoch = null;
     this.lastAck = -1;
     this.lastAgeMs = null;
     this.entering = false;
     this.lastEnterAt = 0;
     this.lastRecoverAt = 0;
+    /** One host-authoritative recovery restart per local level instance. */
+    this.recovering = false;
     /** Level the host was last seen in (full snapshots only) — a static world
      * only produces `same` heartbeats (no lvl), so follow retries need this. */
     this.lastSeenHostLevel = null;
@@ -147,6 +153,14 @@ export class GuestSnapshotApplier {
         this.lastHash = null;
       }
     });
+    // A new Level instance is the only point at which a recovery restart is
+    // complete. Clear the guard here so a later, genuine round can recover.
+    bus.on('adapter:level-created', () => {
+      this.recovering = false;
+    });
+    bus.on('adapter:level-destroyed', () => {
+      this.recovering = false;
+    });
 
     net.on(P.EVENTS.SYNC_SNAPSHOT, (payload) => this.#onSnapshot(payload));
   }
@@ -165,6 +179,14 @@ export class GuestSnapshotApplier {
     // somehow coaxed into echoing them back.
     if (this.session.isHost) return;
     if (!payload || typeof payload !== 'object') return;
+    // A host reload starts its counter at zero. Reset the ordering window when
+    // the stream epoch changes so the guest keeps receiving authoritative
+    // movement immediately after reconnect/reload.
+    const epoch = typeof payload.e === 'string' ? payload.e : '';
+    if (epoch !== this.lastEpoch) {
+      this.lastEpoch = epoch;
+      this.lastSeq = -1;
+    }
     if (typeof payload.seq !== 'number' || payload.seq <= this.lastSeq) {
       this.droppedCount = (this.droppedCount ?? 0) + 1; // stale / duplicate
       return;
@@ -226,10 +248,18 @@ export class GuestSnapshotApplier {
       this.#correctionsSinceFrame += res.soft + res.hard + res.discrete;
       // The guest's sim finished a level the host is still playing: the host
       // is authoritative, so re-enter the level and keep going.
-      if (res.endedMismatch && Date.now() - this.lastRecoverAt > ENTER_RETRY_MS) {
+      if (
+        res.endedMismatch &&
+        !this.recovering &&
+        Date.now() - this.lastRecoverAt > ENTER_RETRY_MS
+      ) {
         this.lastRecoverAt = Date.now();
         logger.warn('guest ended but host still playing — restarting level');
-        this.adapter.restart();
+        const restarted = this.adapter.restart();
+        // `restart()` is deliberately idempotent. Treat a concurrent round
+        // transition as recovery too, preventing another snapshot from
+        // enqueueing a second fade before the lifecycle hook fires.
+        this.recovering = Boolean(restarted || this.adapter.transition);
       }
     }
     this.#emitStats();
