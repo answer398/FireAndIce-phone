@@ -97,6 +97,7 @@ export class GuestRoundFollower {
     this.P = P;
     this.entering = false;
     this.lastEnterAt = 0;
+    this.pendingHostLevel = null;
     /** The last round THIS follower saw (session.round is already updated
      * by the time our net listener runs — we need the previous value). */
     this.lastRound = { id: 0, level: null, phase: this.P.ROUND_PHASES.IDLE };
@@ -144,8 +145,22 @@ export class GuestRoundFollower {
   }
 
   #enterHostLevel(hostLevel) {
-    if (this.entering) return;
-    if (Date.now() - this.lastEnterAt < 1500) return;
+    if (this.entering) {
+      // Keep the newest authoritative target. A level switch can arrive while
+      // the previous round's restart fade is still completing.
+      this.pendingHostLevel = { ...hostLevel };
+      return;
+    }
+    const waitMs = 1500 - (Date.now() - this.lastEnterAt);
+    if (waitMs > 0) {
+      this.pendingHostLevel = { ...hostLevel };
+      setTimeout(() => {
+        const pending = this.pendingHostLevel;
+        this.pendingHostLevel = null;
+        if (pending) this.#enterHostLevel(pending);
+      }, waitMs);
+      return;
+    }
     this.entering = true;
     this.lastEnterAt = Date.now();
       this.adapter
@@ -165,6 +180,9 @@ export class GuestRoundFollower {
       .catch((err) => logger.warn('startLevel failed', err?.message ?? err))
       .finally(() => {
         this.entering = false;
+        const pending = this.pendingHostLevel;
+        this.pendingHostLevel = null;
+        if (pending) this.#enterHostLevel(pending);
       });
   }
 }
