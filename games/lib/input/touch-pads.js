@@ -131,7 +131,8 @@
         '  position: fixed;',
         '  bottom: calc(10px + env(safe-area-inset-bottom, 0px));',
         '  z-index: 2147480002;',                   /* above the guest video layer */
-        '  display: flex; flex-direction: column; align-items: center; gap: var(--fb-pad-gap);',
+        '  display: flex; flex-direction: row; align-items: flex-end; gap: var(--fb-pad-gap);',
+        '  position: fixed;',
         '  pointer-events: auto;',                  /* dead zone swallows stray thumbs */
         '  touch-action: none;',
         '  user-select: none; -webkit-user-select: none;',
@@ -139,6 +140,7 @@
         '.tc-pad-left  { left:  calc(10px + env(safe-area-inset-left, 0px)); }',
         '.tc-pad-right { right: calc(10px + env(safe-area-inset-right, 0px)); }',
         '.tc-label {',
+        '  position: absolute; left: 0; right: 0; bottom: calc(100% + 3px);',
         '  pointer-events: none; text-align: center; width: 100%;',
         '  font: bold 10px/1 sans-serif; letter-spacing: 1px;',
         '}',
@@ -404,19 +406,18 @@
         label.textContent = info.label;
         pad.appendChild(label);
 
-        // Jump sits above the direction row: a thumb rests on left/right and
-        // slides straight up to jump — hold direction + jump works natively
-        // because every button tracks its own pointer.
+        // Keep horizontal movement together on the left and jump on the right
+        // so two thumbs can operate independently on the same baseline.
         var jumpRow = document.createElement('div');
         jumpRow.className = 'tc-row';
         jumpRow.appendChild(makeButton(role, 'up', '跳'));
-        pad.appendChild(jumpRow);
 
         var dirRow = document.createElement('div');
         dirRow.className = 'tc-row';
         dirRow.appendChild(makeButton(role, 'left', '◀'));
         dirRow.appendChild(makeButton(role, 'right', '▶'));
         pad.appendChild(dirRow);
+        pad.appendChild(jumpRow);
 
         // Dead-zone swallow: a touch landing on the pad's gaps must not reach
         // the game canvas (prevents accidental in-game clicks).
