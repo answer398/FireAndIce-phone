@@ -658,7 +658,7 @@ export class GameAdapter {
    * @returns {{ok?:boolean, soft:number, hard:number, discrete:number,
    *            levelMismatch?:boolean}} correction counters for the HUD.
    */
-  applyState(snap) {
+  applyState(snap, options = {}) {
     const level = this.level;
     const out = { ok: false, soft: 0, hard: 0, discrete: 0 };
     if (!snap?.snap || !level || this.phase !== 'level') return out;
@@ -686,6 +686,7 @@ export class GameAdapter {
       const c = chars[i];
       if (!c?.body) return;
       const [x, y, vx, vy, alive, diamonds, silver, facing] = target;
+      const char = i === 0 ? 'fb' : 'wg';
 
       // Death is authoritative: run the game's own kill chain once.
       if (!alive && !(c.dying || c.dead || c.isDead)) {
@@ -702,6 +703,20 @@ export class GameAdapter {
         out.discrete++;
       }
       if (facing && c.facing !== facing) c.facing = facing;
+      // The bundled game derives its running animation from the character's
+      // cursor key state, rather than velocity alone. A guest has no host
+      // keyboard events, so mirror the authoritative direction on the remote
+      // character only. The locally controlled character keeps its real input
+      // state and prediction untouched.
+      if (options.remoteChar === char && c.cursors) {
+        const dir = facing === 'left' || (facing !== 'right' && typeof vx === 'number' && vx < -1.5)
+          ? 'left'
+          : facing === 'right' || (typeof vx === 'number' && vx > 1.5)
+            ? 'right'
+            : null;
+        if (c.cursors.left) c.cursors.left.isDown = dir === 'left';
+        if (c.cursors.right) c.cursors.right.isDown = dir === 'right';
+      }
 
       const px = c.body.sprite?.x ?? 0;
       const py = c.body.sprite?.y ?? 0;
@@ -724,6 +739,11 @@ export class GameAdapter {
       } else if (dist > r.softMin) {
         c.body.x = px + dx * r.softFraction;
         c.body.y = py + dy * r.softFraction;
+        // Keep the visual simulation moving in the authoritative direction
+        // during soft correction. Without this, a guest renders the remote
+        // character at successive snapshot positions while its local physics
+        // remains at zero velocity, which looks like sliding.
+        this.#setRawVelocity(c.body, vx ?? 0, vy ?? 0);
         out.soft++;
       }
     });

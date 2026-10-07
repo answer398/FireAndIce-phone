@@ -203,7 +203,14 @@ export class GuestSnapshotApplier {
     }
 
     // ---- correction -------------------------------------------------------------
-    const res = this.adapter.applyState(payload);
+    // The guest simulates its own character locally. The other character is
+    // rendered from host snapshots; pass its seat explicitly so the adapter
+    // can keep that character's animation input state in sync without
+    // overwriting the locally controlled character's keys.
+    const remoteChar = this.session.char === this.P.CHARS?.FIREBOY || this.session.char === 'fb'
+      ? 'wg'
+      : 'fb';
+    const res = this.adapter.applyState(payload, { remoteChar });
     if (res.levelMismatch) {
       // Identity drift (guest still loading or rotated into another level):
       // re-enter the host's level.

@@ -434,6 +434,12 @@ export function bootstrap(P) {
     updateGuestPads();
   });
 
+  // Round following can enter the guest's local level before the matching
+  // host status packet arrives (or while that packet is still queued). Re-run
+  // the input gate when the adapter itself reaches a level so controls become
+  // active as soon as the simulation is ready.
+  bus.on('adapter:phase', () => updateGuestPads());
+
   // Pause chip for the guest (request the host to toggle pause).
   overlay.chip.addEventListener('dblclick', () => {
     if (session.role === P.ROLES.GUEST && roomStateIs(...PLAY_STATES)) {
@@ -447,7 +453,14 @@ export function bootstrap(P) {
   function updateGuestPads() {
     if (!guestPads) return;
     const live = roomStateIs(P.ROOM_STATES.PLAYING, P.ROOM_STATES.PAUSED);
-    const inLevel = Boolean(lastHostStatus && lastHostStatus.phase === 'level');
+    // The host's status packet can race the server's round update: the first
+    // phase=level packet may carry the previous round id and be dropped. The
+    // guest's own adapter is already in the followed level in that case, so
+    // use it as the local source of truth for input gating. Waiting only for
+    // GAME_STATUS leaves keyboard/touch input local while no frames reach the
+    // host, and the next host snapshot then snaps the guest back.
+    const inLevel = adapter.getPhase() === P.GAME_PHASES.LEVEL ||
+      Boolean(lastHostStatus && lastHostStatus.phase === 'level');
     guestPads.setEnabled(live && inLevel);
   }
 
