@@ -6,8 +6,6 @@
 
 手机端建议横屏使用。左右移动按钮位于左侧，跳跃按钮位于右侧，支持多指同时操作。
 
-![手机端联机游戏实测](docs/mobile-gameplay.jpg)
-
 完整联机流程截图：
 
 | 房主创建房间 | 第二台设备加入 |
@@ -103,7 +101,7 @@ common/protocol/           # 浏览器和服务端共用协议
 server/                    # Express 静态服务、房间状态机和 Socket.IO
 tests/                     # 移动端浏览器 E2E 测试
 deploy/                    # Nginx 配置示例
-docs/mobile-gameplay.jpg   # 手机端实测截图
+docs/multiplayer-mobile-*.png # iPhone 尺寸联机流程截图
 ```
 
 ## 版权与使用提醒

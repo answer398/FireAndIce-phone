@@ -70,7 +70,10 @@ export function createApp() {
       "base-uri 'self'",
       "object-src 'none'",
       "frame-ancestors 'self'",
-      "script-src 'self' 'unsafe-inline' blob:",
+      // The bundled legacy Phaser/Box2D runtimes compile small shader and
+      // compatibility functions dynamically; unsafe-eval is required for
+      // those game assets to boot, while the rest of the policy stays scoped.
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",

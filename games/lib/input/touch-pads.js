@@ -131,22 +131,24 @@
         '  position: fixed;',
         '  bottom: calc(10px + env(safe-area-inset-bottom, 0px));',
         '  z-index: 2147480002;',                   /* above the guest video layer */
-        '  display: flex; flex-direction: row; align-items: flex-end; gap: var(--fb-pad-gap);',
-        '  position: fixed;',
-        '  pointer-events: auto;',                  /* dead zone swallows stray thumbs */
+        '  left: 0; right: 0; width: 100vw; height: var(--fb-pad-size);',
+        '  pointer-events: none;',                  /* only the button rows accept touches */
         '  touch-action: none;',
         '  user-select: none; -webkit-user-select: none;',
         '}',
-        '.tc-pad-left  { left:  calc(10px + env(safe-area-inset-left, 0px)); }',
-        '.tc-pad-right { right: calc(10px + env(safe-area-inset-right, 0px)); }',
+        '.tc-pad-left, .tc-pad-right { left: 0; right: 0; }',
         '.tc-label {',
-        '  position: absolute; left: 0; right: 0; bottom: calc(100% + 3px);',
+        '  position: absolute; bottom: calc(100% + 3px);',
         '  pointer-events: none; text-align: center; width: 100%;',
         '  font: bold 10px/1 sans-serif; letter-spacing: 1px;',
         '}',
+        '.tc-pad-left .tc-label { left: 0; width: 50%; }',
+        '.tc-pad-right .tc-label { right: 0; width: 50%; }',
         '.tc-label-water { color: rgba(51,204,255,0.5); }',
         '.tc-label-fire  { color: rgba(255,77,77,0.5); }',
-        '.tc-row { display: flex; gap: 8px; justify-content: center; }',
+        '.tc-row { position: absolute; bottom: 0; display: flex; gap: 8px; justify-content: center; pointer-events: auto; }',
+        '.tc-dir-row { left: calc(10px + env(safe-area-inset-left, 0px)); }',
+        '.tc-jump-row { right: calc(10px + env(safe-area-inset-right, 0px)); }',
         '.tc-btn {',
         '  width: var(--fb-pad-size); height: var(--fb-pad-size); border-radius: 18px;',
         '  border: 2px solid; box-sizing: border-box;',
@@ -169,9 +171,9 @@
         '',
         '/* tablets / large screens: roomier pads */',
         '@media (min-width: 768px) {',
-        '  .tc-pad { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); gap: 12px; }',
-        '  .tc-pad-left  { left:  calc(16px + env(safe-area-inset-left, 0px)); }',
-        '  .tc-pad-right { right: calc(16px + env(safe-area-inset-right, 0px)); }',
+        '  .tc-pad { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }',
+        '  .tc-dir-row { left: calc(16px + env(safe-area-inset-left, 0px)); }',
+        '  .tc-jump-row { right: calc(16px + env(safe-area-inset-right, 0px)); }',
         '  .tc-row { gap: 12px; }',
         '  .tc-label { font-size: 13px; }',
         '  :root { --fb-pad-size: 120px; --fb-pad-gap: 12px; }',
@@ -180,7 +182,7 @@
         '   phone that matches both (e.g. 844x390 iPhone landscape) gets the',
         '   compact size, not the tablet size. */',
         '@media (max-height: 480px) {',
-        '  .tc-pad { bottom: calc(8px + env(safe-area-inset-bottom, 0px)); gap: 6px; }',
+        '  .tc-pad { bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }',
         '  .tc-row { gap: 6px; }',
         '  :root { --fb-pad-size: 68px; --fb-pad-gap: 6px; }',
         '}',
@@ -409,11 +411,11 @@
         // Keep horizontal movement together on the left and jump on the right
         // so two thumbs can operate independently on the same baseline.
         var jumpRow = document.createElement('div');
-        jumpRow.className = 'tc-row';
+        jumpRow.className = 'tc-row tc-jump-row';
         jumpRow.appendChild(makeButton(role, 'up', '跳'));
 
         var dirRow = document.createElement('div');
-        dirRow.className = 'tc-row';
+        dirRow.className = 'tc-row tc-dir-row';
         dirRow.appendChild(makeButton(role, 'left', '◀'));
         dirRow.appendChild(makeButton(role, 'right', '▶'));
         pad.appendChild(dirRow);
