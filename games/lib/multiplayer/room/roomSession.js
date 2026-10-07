@@ -40,6 +40,7 @@ export const ERROR_TEXT = {
   'rate-limited': '操作太频繁，请稍后再试',
   'server-busy': '服务器繁忙（房间数已达上限），请稍后再试',
   'game-not-found': '未知的游戏',
+  offline: '正在连接联机服务器，请稍后重试',
 };
 
 export class RoomSession {
@@ -91,17 +92,27 @@ export class RoomSession {
 
   create({ game, char }) {
     if (this.joining || this.code) return;
+    if (!this.net.connected) {
+      this.#emitError({ code: 'offline' });
+      return false;
+    }
     this.joining = true;
-    this.net.emit(this.P.EVENTS.ROOM_CREATE, { game, char, protocol: this.P.PROTOCOL_VERSION }, (ack) => {
+    const sent = this.net.emit(this.P.EVENTS.ROOM_CREATE, { game, char, protocol: this.P.PROTOCOL_VERSION }, (ack) => {
       this.joining = false;
       if (ack && ack.ok === false) this.#emitError({ code: ack.code });
     });
+    if (!sent) this.joining = false;
+    return sent;
   }
 
   join(code) {
     if (this.joining || this.code) return;
+    if (!this.net.connected) {
+      this.#emitError({ code: 'offline' });
+      return false;
+    }
     this.joining = true;
-    this.net.emit(
+    const sent = this.net.emit(
       this.P.EVENTS.ROOM_JOIN,
       { code: String(code ?? '').toUpperCase(), protocol: this.P.PROTOCOL_VERSION },
       (ack) => {
@@ -109,6 +120,8 @@ export class RoomSession {
         if (ack && ack.ok === false) this.#emitError({ code: ack.code });
       },
     );
+    if (!sent) this.joining = false;
+    return sent;
   }
 
   /**

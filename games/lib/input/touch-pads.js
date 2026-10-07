@@ -298,20 +298,24 @@
     /** Pointer-event binding with per-pointer capture. */
     function bindButton(btn, role, action) {
         var heldPointer = null; // pointerId currently holding this button, or null
+        var pointerHeldKey = '__fbPointerHeld';
+        var touchHeldKey = '__fbTouchHeld';
 
         var release = function (e) {
             if (heldPointer === null) return;
             if (e && e.pointerId !== undefined && e.pointerId !== heldPointer) return;
             var id = heldPointer;
             heldPointer = null;
+            btn[pointerHeldKey] = false;
             dropHold(id);
             manager.setAction(role, action, false, 'local', { kind: 'touch' });
         };
 
         btn.addEventListener('pointerdown', function (e) {
-            if (heldPointer !== null) return; // already held by another finger
+            if (heldPointer !== null || btn[touchHeldKey]) return; // already held by touch
             e.preventDefault();
             heldPointer = e.pointerId;
+            btn[pointerHeldKey] = true;
             pointerHolds.push({ pointerId: e.pointerId, release: release });
             if (navigator.vibrate) { try { navigator.vibrate(8); } catch (err) {} }
             try {
@@ -360,19 +364,23 @@
     function bindButtonTouchFallback(btn, role, action) {
         var held = false;
         btn.addEventListener('touchstart', function (e) {
+            if (btn.__fbPointerHeld || held) return;
             e.preventDefault();
             held = true;
+            btn.__fbTouchHeld = true;
             manager.setAction(role, action, true, 'local', { kind: 'touch' });
         }, { passive: false });
         var release = function () {
             if (!held) return;
             held = false;
+            btn.__fbTouchHeld = false;
             manager.setAction(role, action, false, 'local', { kind: 'touch' });
         };
         btn.addEventListener('touchend', release);
         btn.addEventListener('touchcancel', release);
         // Mouse fallback for hybrid/forced-desktop use.
         btn.addEventListener('mousedown', function (e) {
+            if (btn.__fbPointerHeld) return;
             e.preventDefault();
             held = true;
             if (navigator.vibrate) { try { navigator.vibrate(8); } catch (err) {} }
@@ -390,11 +398,11 @@
         btn.setAttribute('data-role', role);
         btn.setAttribute('data-action', action);
         btn.innerHTML = '<span>' + text + '</span>';
-        if (window.PointerEvent) {
-            bindButton(btn, role, action);
-        } else {
-            bindButtonTouchFallback(btn, role, action);
-        }
+        // Register both paths. iOS Safari has shipped Pointer Events with
+        // partial touch behavior across versions; the held flags prevent the
+        // compatibility path from double-pressing when both fire.
+        bindButton(btn, role, action);
+        bindButtonTouchFallback(btn, role, action);
         return btn;
     }
 
