@@ -570,6 +570,10 @@ export class GameAdapter {
       // from our create hook (see #needsManualLevelStart).
       this.#clearStuckFade(game);
       this.#needsManualLevelStart = true;
+      // A previous menu fade may still deliver its callback after this direct
+      // restart (common when the guest was on the end screen). Allow the
+      // requested start once, then discard that stale callback.
+      this.#guardForcedLevelStart(game);
       game.state.start('level', true, false, levelDesc);
       return;
     }
