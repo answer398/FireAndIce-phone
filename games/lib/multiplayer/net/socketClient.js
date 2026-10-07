@@ -33,17 +33,25 @@ export const ConnectionState = {
  * in a function scope — the page's global AMD loader is never touched. */
 export async function loadSocketIoSdk() {
   if (window.io) return window.io;
+  const previousDefine = window.define;
   try {
-    const res = await fetch(config.socketPath + '/socket.io.min.js');
-    if (!res.ok) return null;
-    const code = await res.text();
-    const captureDefine = (factory) => {
-      window.io = factory();
-    };
-    captureDefine.amd = true;
-    new Function('define', code)(captureDefine);
-    return window.io ?? null;
+    // RequireJS is present in the game runtime. Socket.IO's UMD bundle would
+    // otherwise register an anonymous AMD module instead of exposing window.io.
+    window.define = undefined;
+    const script = document.createElement('script');
+    script.src = config.socketPath + '/socket.io.min.js';
+    script.async = false;
+    const loaded = new Promise((resolve) => {
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+    });
+    document.head.appendChild(script);
+    const ok = await loaded;
+    window.define = previousDefine;
+    script.remove();
+    return ok ? window.io ?? null : null;
   } catch {
+    window.define = previousDefine;
     return null;
   }
 }
