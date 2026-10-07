@@ -291,6 +291,15 @@ async function runGame(browsers, server, gameId, { deep, onPages = () => {} }) {
     30_000,
   );
   record(gameId, '队友经邀请链接入座（guest）', true);
+  // The room seat can be established before the guest's Phaser bundle has
+  // finished booting. Wait for the local game before readiness, otherwise the
+  // server countdown can start while the guest is still unable to follow it.
+  await guest.waitFor(
+    `Boolean(window.__mpDebug && __mpDebug.adapter && __mpDebug.adapter.game)`,
+    `${gameId} guest: game instance captured`,
+    60_000,
+  );
+  record(gameId, '访客游戏加载完成（adapter 捕获 game 实例）', true);
 
   // 3. Ready both → server countdown → start.
   await host.eval(`__mpDebug.session.setReady(true)`);
