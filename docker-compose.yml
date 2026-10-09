@@ -1,14 +1,17 @@
 services:
   fireandice:
+    image: fireandice-phone:latest
     build: .
     restart: unless-stopped
     environment:
       NODE_ENV: production
       PORT: 8080
-      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL}
-      TRUST_PROXY: "1"
-      ALLOWED_ORIGINS: ${PUBLIC_URL}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:${HTTP_PORT:-8080}}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-${PUBLIC_URL:-http://localhost:${HTTP_PORT:-8080}}}
       EMPTY_ROOM_TTL_MS: ${EMPTY_ROOM_TTL_MS:-600000}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
     expose:
       - "8080"
     healthcheck:

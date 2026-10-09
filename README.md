@@ -72,10 +72,18 @@ npm --prefix server run dev
 
 项目提供 `Dockerfile`、`docker-compose.yml`、`deploy/nginx.conf.example` 和 `.env.example`。
 
+首次在本机启动无需准备配置文件：
+
 ```bash
-cp .env.example .env
-# 修改 PUBLIC_URL 和 ALLOWED_ORIGINS
 docker compose up -d --build
+```
+
+浏览器打开 <http://localhost:8080/>。需要更换端口时设置 `HTTP_PORT`（例如 `HTTP_PORT=8090`）；通过 Nginx/Caddy 对外部署时，将 `.env.example` 复制为 `.env`，设置公网 `PUBLIC_URL` 和 `ALLOWED_ORIGINS`，并将 `TRUST_PROXY` 设为 `1`。
+
+停止服务：
+
+```bash
+docker compose down
 ```
 
 Nginx 需要使用 HTTPS，并将 `/socket.io/` 原样转发到 Node 服务，同时转发 `Upgrade`、`Connection: upgrade` 和 `X-Forwarded-*` 请求头。Node 默认监听 8080，健康检查地址为 `/healthz`。
